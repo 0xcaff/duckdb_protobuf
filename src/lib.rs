@@ -5,10 +5,9 @@ use std::fs::File;
 use std::io;
 use std::io::{ErrorKind, Read};
 
-use duckdb::vtab::{
-    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
-};
+use duckdb::vtab::{BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab};
 use duckdb::Connection;
+use duckdb::ffi;
 use duckdb_loadable_macros::duckdb_entrypoint;
 use prost::Message;
 use prost_types::field_descriptor_proto::{Label, Type};
@@ -82,7 +81,7 @@ where
 
 impl ProtobufInitData {}
 
-pub fn init(bind_params: &Parameters) -> Result<ProtobufInitData, Box<dyn Error>> {
+fn init(bind_params: &Parameters) -> Result<ProtobufInitData, Box<dyn Error>> {
     Ok(ProtobufInitData {
         files_iterator: glob::glob(bind_params.files.as_str())?,
         current_file: None,
@@ -280,12 +279,12 @@ pub fn into_logical_type_single(
 pub fn create_enum_type(variants: &[&str]) -> LogicalType {
     let variants = variants
         .iter()
-        .map(|it| CString::new(it).unwrap())
+        .map(|it| CString::new(*it).unwrap())
         .collect::<Vec<_>>();
     let mut variants = variants.iter().map(|it| it.as_ptr()).collect::<Vec<_>>();
 
     From::from(unsafe {
-        duckdb::ffi::duckdb_create_enum_type(variants.as_mut_ptr(), variants.len() as _)
+        ffi::duckdb_create_enum_type(variants.as_mut_ptr(), variants.len() as _)
     })
 }
 
@@ -313,8 +312,8 @@ impl VTab for ProtobufVTab {
         Ok(())
     }
 
-    fn init(init: &InitInfo, data: *mut Self::InitData) -> duckdb::Result<(), Box<dyn Error>> {
-        let bind_date = init.get_bind_data::<ProtobufBindData>();
+    fn init(init_info: &InitInfo, data: *mut Self::InitData) -> duckdb::Result<(), Box<dyn Error>> {
+        let bind_date = init_info.get_bind_data::<ProtobufBindData>();
 
         unsafe {
             let parameters = &*(&*bind_date).parameters;
