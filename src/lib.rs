@@ -1,13 +1,15 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::error::Error;
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, c_void};
 use std::fs::File;
 use std::io;
 use std::io::{ErrorKind, Read};
 
-use duckdb::vtab::{BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab};
-use duckdb::Connection;
 use duckdb::ffi;
+use duckdb::vtab::{
+    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
+};
+use duckdb::Connection;
 use duckdb_loadable_macros::duckdb_entrypoint;
 use prost::Message;
 use prost_types::field_descriptor_proto::{Label, Type};
@@ -196,29 +198,6 @@ pub fn into_logical_type(
     }
 }
 
-pub fn into_logical_type_enum(
-    enum_descriptor: &EnumDescriptorProto,
-) -> Result<LogicalType, Box<dyn Error>> {
-    let mut values = enum_descriptor.value.clone();
-    values.sort_by_key(|it| it.number());
-
-    if values[0].number() != 0 {
-        return Err("enum values must start at 0".into());
-    }
-
-    if values.len() != values.last().unwrap().number() as usize + 1 {
-        return Err("enum values must be contiguous".into());
-    }
-
-    Ok(create_enum_type(
-        &values
-            .iter()
-            .map(|it| it.name())
-            .collect::<Vec<&str>>()
-            .as_slice(),
-    ))
-}
-
 pub fn get_type_name(field: &FieldDescriptorProto) -> Result<&str, Box<dyn Error>> {
     let type_name = field.type_name();
     let (prefix, absolute_type_name) = type_name.split_at(1);
@@ -248,13 +227,7 @@ pub fn into_logical_type_single(
                     .collect::<Result<Vec<(&str, LogicalType)>, Box<dyn Error>>>()?,
             )
         }
-        Type::Enum => {
-            let type_name = get_type_name(field)?;
-            let enum_descriptor = get_enum_matching(descriptors, type_name)?
-                .ok_or(format!("enum type not found: {}", type_name))?;
-
-            into_logical_type_enum(enum_descriptor)?
-        }
+        Type::Enum => LogicalType::new(LogicalTypeId::Varchar),
         Type::String => LogicalType::new(LogicalTypeId::Varchar),
         Type::Uint32 => LogicalType::new(LogicalTypeId::UInteger),
         Type::Uint64 => LogicalType::new(LogicalTypeId::UBigint),
@@ -274,18 +247,6 @@ pub fn into_logical_type_single(
     };
 
     Ok(value)
-}
-
-pub fn create_enum_type(variants: &[&str]) -> LogicalType {
-    let variants = variants
-        .iter()
-        .map(|it| CString::new(*it).unwrap())
-        .collect::<Vec<_>>();
-    let mut variants = variants.iter().map(|it| it.as_ptr()).collect::<Vec<_>>();
-
-    From::from(unsafe {
-        ffi::duckdb_create_enum_type(variants.as_mut_ptr(), variants.len() as _)
-    })
 }
 
 impl VTab for ProtobufVTab {
