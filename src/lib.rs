@@ -6,57 +6,66 @@ use std::fmt::Formatter;
 use std::fs::File;
 use std::io;
 use std::io::Read;
+use std::ops::{Deref, DerefMut};
 
 use byteorder::{BigEndian, ReadBytesExt};
+use duckdb::Connection;
 use duckdb::ffi;
 use duckdb::ffi::{
     duckdb_list_entry, duckdb_list_vector_get_child, duckdb_list_vector_reserve,
     duckdb_list_vector_set_size, duckdb_vector,
 };
-use duckdb::vtab::{
-    BindInfo, DataChunk, FlatVector, Free, FunctionInfo, InitInfo, Inserter, LogicalType,
-    LogicalTypeId, VTab,
-};
-use duckdb::Connection;
+use duckdb::vtab::{BindInfo, DataChunk, FlatVector, Free, FunctionInfo, InitInfo, Inserter, LogicalType, LogicalTypeId, VTab};
 use duckdb_loadable_macros::duckdb_entrypoint;
-use prost::bytes::{Buf, BufMut};
-use prost::encoding::{message, DecodeContext, WireType};
 use prost::{DecodeError, Message};
-use prost_types::field_descriptor_proto::{Label, Type};
+use prost::bytes::{Buf, BufMut};
+use prost::encoding::{DecodeContext, message, WireType};
 use prost_types::{DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorSet};
+use prost_types::field_descriptor_proto::{Label, Type};
 
 struct ProtobufVTab;
 
 #[repr(C)]
-struct ProtobufBindData {
-    parameters: *mut Parameters,
+struct Handle<T> {
+    inner: *mut T,
 }
 
-impl Free for ProtobufBindData {
-    fn free(&mut self) {
-        unsafe {
-            if self.parameters.is_null() {
-                return;
-            }
+impl <T> Handle<T> {
+    pub fn assign(&mut self, inner: T) {
+        self.inner = Box::into_raw(Box::new(inner));
+    }
+}
 
-            drop(Box::from_raw(self.parameters));
+impl <T> Deref for Handle<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        if self.inner.is_null() {
+            panic!("unable to deref non-null handle")
+        }
+
+        unsafe {
+            &*self.inner
         }
     }
 }
 
-#[repr(C)]
-struct ProtobufInitData {
-    files_reader: *mut RecordsReader,
+impl <T> DerefMut for Handle<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe {
+            &mut *self.inner
+        }
+    }
 }
 
-impl Free for ProtobufInitData {
+impl <T> Free for Handle<T> {
     fn free(&mut self) {
         unsafe {
-            if self.files_reader.is_null() {
+            if self.inner.is_null() {
                 return;
             }
 
-            drop(Box::from_raw(self.files_reader));
+            drop(Box::from_raw(self.inner));
         }
     }
 }
@@ -286,10 +295,12 @@ pub fn into_logical_type_single(
 }
 
 impl VTab for ProtobufVTab {
-    type InitData = ProtobufInitData;
-    type BindData = ProtobufBindData;
+    type InitData = Handle<RecordsReader>;
+    type BindData = Handle<Parameters>;
 
     fn bind(bind: &BindInfo, data: *mut Self::BindData) -> duckdb::Result<(), Box<dyn Error>> {
+        let data = unsafe {&mut *data};
+
         let params = Parameters::from_bind_info(bind)?;
 
         for field_descriptor in &params.message_descriptor.field {
@@ -299,38 +310,25 @@ impl VTab for ProtobufVTab {
             );
         }
 
-        unsafe {
-            (*data).parameters = Box::into_raw(Box::new(params));
-        }
+        data.assign(params);
 
         Ok(())
     }
 
     fn init(init_info: &InitInfo, data: *mut Self::InitData) -> duckdb::Result<(), Box<dyn Error>> {
-        let bind_date = init_info.get_bind_data::<ProtobufBindData>();
+        let data = unsafe { &mut *data };
+        let bind_data = unsafe { &*init_info.get_bind_data::<Self::BindData>() };
 
-        unsafe {
-            let parameters = &*(&*bind_date).parameters;
-            (*data).files_reader = Box::into_raw(Box::new(RecordsReader::new(parameters)?));
-        }
+        data.assign(RecordsReader::new(&bind_data)?);
 
         Ok(())
     }
 
     fn func(func: &FunctionInfo, output: &mut DataChunk) -> duckdb::Result<(), Box<dyn Error>> {
-        let bind_data = unsafe {
-            let bind_info = func.get_bind_data::<ProtobufBindData>();
+        let bind_data = unsafe { &mut *func.get_bind_data::<Self::BindData>() };
+        let init_data = unsafe { &mut *func.get_init_data::<Self::InitData>() };
 
-            &mut *bind_info
-        };
-
-        let init_data = unsafe {
-            let init_info = func.get_init_data::<ProtobufInitData>();
-
-            &mut *(*init_info).files_reader
-        };
-
-        let parameters = unsafe { &*(&*bind_data).parameters };
+        let parameters: &Parameters = bind_data.deref();
 
         let available_chunk_size = output.flat_vector(0).capacity();
         let mut items = 0;
@@ -401,10 +399,6 @@ struct StructVector(duckdb::ffi::duckdb_vector);
 impl StructVector {
     unsafe fn new(value: duckdb_vector) -> Self {
         Self(value)
-    }
-
-    pub fn into(self) -> duckdb::vtab::StructVector {
-        duckdb::vtab::StructVector::from(self.0)
     }
 }
 
@@ -584,15 +578,16 @@ where
                 // to initialize list entry values.
                 let has_seen = self.seen_repeated_fields.get(&field_idx).is_some();
                 self.seen_repeated_fields.insert(field_idx);
+                // todo: assumption that first memory value
                 if !has_seen {
                     let next_offset =
                         find_next_offset(list_entry_items, self.output_row_idx).unwrap_or(0);
-                    let mut list_entry = &mut list_entry_items[self.output_row_idx];
+                    let list_entry = &mut list_entry_items[self.output_row_idx];
                     list_entry.offset = next_offset;
                     list_entry.length = 0;
                 }
 
-                let mut list_entry = &mut list_entry_items[self.output_row_idx];
+                let list_entry = &mut list_entry_items[self.output_row_idx];
 
                 let row_idx = list_entry.offset as usize + list_entry.length as usize;
                 let needed_length = row_idx + 1;
