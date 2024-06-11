@@ -42,26 +42,49 @@ impl Free for ProtobufBindData {
 
 #[repr(C)]
 struct ProtobufInitData {
+    files_reader: *mut FilesReader,
+}
+
+impl Free for ProtobufInitData {
+    fn free(&mut self) {
+        unsafe {
+            if self.files_reader.is_null() {
+                return;
+            }
+
+            drop(Box::from_raw(self.files_reader));
+        }
+    }
+}
+
+struct FilesReader {
     files_iterator: glob::Paths,
     current_file: Option<LengthDelimitedRecordsReader<File>>,
 }
 
-impl ProtobufInitData {
+impl FilesReader {
+    pub fn new(params: &Parameters) -> Result<FilesReader, Box<dyn Error>> {
+        Ok(FilesReader {
+            files_iterator: glob::glob(params.files.as_str())?,
+            current_file: None,
+        })
+    }
+
     fn next_message(&mut self) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-            let file_reader = if let Some(reader) = &mut self.current_file {
-                reader
-            } else {
-                let Some(next_file_path) = self.files_iterator.next() else {
-                    return Ok(None)
-                };
-
-                let next_file_path = next_file_path?;
-                let next_file = File::open(&next_file_path)?;
-
-                self.current_file = Some(LengthDelimitedRecordsReader::new(next_file));
-
-                self.current_file.as_mut().unwrap()
+        let file_reader = if let Some(reader) = &mut self.current_file {
+            reader
+        } else {
+            let Some(next_file_path) = self.files_iterator.next() else {
+                return Ok(None);
             };
+
+            let next_file_path = next_file_path?;
+            let next_file = File::open(&next_file_path)?;
+
+            self.current_file = Some(LengthDelimitedRecordsReader::new(next_file));
+
+            self.current_file.as_mut().unwrap()
+        };
 
         let Some(next_message) = file_reader.try_get_next()? else {
             self.current_file = None;
@@ -100,17 +123,6 @@ where
         }
     }
 }
-
-impl ProtobufInitData {}
-
-fn init(bind_params: &Parameters) -> Result<ProtobufInitData, Box<dyn Error>> {
-    Ok(ProtobufInitData {
-        files_iterator: glob::glob(bind_params.files.as_str())?,
-        current_file: None,
-    })
-}
-
-impl Free for ProtobufInitData {}
 
 struct Parameters {
     files: String,
@@ -296,7 +308,7 @@ impl VTab for ProtobufVTab {
 
         unsafe {
             let parameters = &*(&*bind_date).parameters;
-            *data = init(parameters)?;
+            (*data).files_reader = Box::into_raw(Box::new(FilesReader::new(parameters)?));
         }
 
         Ok(())
@@ -312,7 +324,7 @@ impl VTab for ProtobufVTab {
         let init_data = unsafe {
             let init_info = func.get_init_data::<ProtobufInitData>();
 
-            &mut *init_info
+            &mut *(*init_info).files_reader
         };
 
         let parameters = unsafe { &*(&*bind_data).parameters };
