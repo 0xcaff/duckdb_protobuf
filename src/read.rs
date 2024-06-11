@@ -1,5 +1,4 @@
 use crate::descriptors::{FieldDescriptorProtoExt, FileDescriptorSetExt};
-use core::fmt;
 use duckdb::ffi;
 use duckdb::ffi::{
     duckdb_list_entry, duckdb_list_vector_get_child, duckdb_list_vector_reserve,
@@ -13,7 +12,6 @@ use prost_types::field_descriptor_proto::{Label, Type};
 use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorSet};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::fmt::Formatter;
 
 pub fn into_logical_type(
     field: &FieldDescriptorProto,
@@ -90,13 +88,6 @@ impl ColumnKey {
     }
     pub fn empty() -> ColumnKey {
         ColumnKey { elements: vec![] }
-    }
-}
-
-impl<V: VectorAccessor> fmt::Debug for ProtobufMessageWriter<'_, V> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProtobufMessageWriter")
-            .finish_non_exhaustive()
     }
 }
 
