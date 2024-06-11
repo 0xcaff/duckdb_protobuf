@@ -1,5 +1,6 @@
 use crate::descriptors::FileDescriptorSetExt;
 use crate::io::RecordsReader;
+use crate::read::{into_logical_type, ColumnKey, ProtobufMessageWriter};
 use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
 };
@@ -10,7 +11,6 @@ use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
-use crate::read::{ColumnKey, into_logical_type, ProtobufMessageWriter};
 
 pub struct Parameters {
     pub files: String,
