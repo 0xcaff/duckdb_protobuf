@@ -297,30 +297,14 @@ where
                     return Err(DecodeError::new("buffer underflow"));
                 }
 
-                let mut seen_tags = HashSet::new();
-
                 let limit = remaining - len as usize;
                 while buf.remaining() > limit {
                     let (tag, wire_type) = decode_key(buf)?;
                     writer.merge_field(tag, wire_type, buf, Default::default())?;
-
-                    seen_tags.insert(tag as i32);
                 }
 
                 if buf.remaining() != limit {
                     return Err(DecodeError::new("delimited length exceeded"));
-                }
-
-                for (field_idx, _field) in self
-                    .message_descriptor
-                    .field
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, it)| !seen_tags.contains(&it.number()))
-                {
-                    // todo: use protobuf default values
-                    let mut column_vector = FlatVector::from(self.output.get_vector(field_idx));
-                    column_vector.set_null(self.output_row_idx);
                 }
             }
             Type::Enum => {
