@@ -1,8 +1,8 @@
-use crate::Parameters;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::error::Error;
 use std::fs::File;
 use std::io;
+use crate::vtab::Parameters;
 
 pub struct RecordsReader {
     files_iterator: glob::Paths,
