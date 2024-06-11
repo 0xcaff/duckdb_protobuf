@@ -1,5 +1,5 @@
-use byteorder::{BigEndian, ReadBytesExt};
 use core::fmt;
+use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::{c_char, c_void};
 use std::fmt::Formatter;
@@ -7,8 +7,12 @@ use std::fs::File;
 use std::io;
 use std::io::Read;
 
+use byteorder::{BigEndian, ReadBytesExt};
 use duckdb::ffi;
-use duckdb::ffi::duckdb_vector;
+use duckdb::ffi::{
+    duckdb_list_entry, duckdb_list_vector_get_child, duckdb_list_vector_reserve,
+    duckdb_list_vector_set_size, duckdb_vector,
+};
 use duckdb::vtab::{
     BindInfo, DataChunk, FlatVector, Free, FunctionInfo, InitInfo, Inserter, LogicalType,
     LogicalTypeId, VTab,
@@ -222,9 +226,11 @@ pub fn into_logical_type(
     descriptors: &FileDescriptorSet,
 ) -> Result<LogicalType, Box<dyn Error>> {
     match field.label() {
-        Label::Repeated | Label::Optional | Label::Required => {
-            Ok(into_logical_type_single(field, descriptors)?)
-        }
+        Label::Repeated => Ok(LogicalType::list(&into_logical_type_single(
+            field,
+            descriptors,
+        )?)),
+        Label::Optional | Label::Required => Ok(into_logical_type_single(field, descriptors)?),
     }
 }
 
@@ -338,6 +344,7 @@ impl VTab for ProtobufVTab {
             let message_descriptor = &parameters.message_descriptor;
 
             let mut protobuf_message_writer = ProtobufMessageWriter {
+                seen_repeated_fields: Default::default(),
                 descriptors: &parameters.descriptors,
                 message_descriptor,
                 output_row_idx,
@@ -360,6 +367,7 @@ impl VTab for ProtobufVTab {
 }
 
 struct ProtobufMessageWriter<'a, V: VectorAccessor> {
+    seen_repeated_fields: HashSet<usize>,
     descriptors: &'a FileDescriptorSet,
     message_descriptor: &'a DescriptorProto,
     output: &'a V,
@@ -406,48 +414,16 @@ impl VectorAccessor for StructVector {
     }
 }
 
-impl<V> prost::Message for ProtobufMessageWriter<'_, V>
-where
-    V: VectorAccessor,
-{
-    fn encode_raw<B>(&self, _buf: &mut B)
-    where
-        B: BufMut,
-        Self: Sized,
-    {
-        unimplemented!("encode_raw not implemented for protobuf message writer");
-    }
-
-    fn merge_field<B>(
-        &mut self,
-        tag: u32,
+impl<V: VectorAccessor> ProtobufMessageWriter<'_, V> {
+    fn merge_dynamic_field<B: Buf>(
+        &self,
+        field: &FieldDescriptorProto,
         wire_type: WireType,
         buf: &mut B,
         ctx: DecodeContext,
-    ) -> Result<(), DecodeError>
-    where
-        B: Buf,
-        Self: Sized,
-    {
-        let (field_idx, field) = match self
-            .message_descriptor
-            .field
-            .iter()
-            .enumerate()
-            .find(|(_idx, field)| field.number() == tag as i32)
-        {
-            Some((idx, field)) => (idx, field),
-            None => {
-                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
-                return Ok(());
-            }
-        };
-
-        let row_idx: usize = self.output_row_idx;
-        let output_vector = self.output.get_vector(field_idx);
-
-        // todo: handle repeated fields
-
+        output_vector: duckdb_vector,
+        row_idx: usize,
+    ) -> Result<(), DecodeError> {
         macro_rules! generate_match_arm {
             ($merge_fn:path, $slice_type:ty) => {{
                 let mut value = <$slice_type>::default();
@@ -466,6 +442,7 @@ where
                     get_type_name(field).map_err(|err| DecodeError::new(err))?;
 
                 let mut writer = ProtobufMessageWriter {
+                    seen_repeated_fields: Default::default(),
                     descriptors: self.descriptors,
                     message_descriptor: get_message_matching(&self.descriptors, message_type_name)
                         .ok_or_else(|| {
@@ -533,6 +510,113 @@ where
                     "unhandled field type: {}",
                     field_type.as_str_name()
                 )));
+            }
+        };
+
+        Ok(())
+    }
+}
+
+impl<V> prost::Message for ProtobufMessageWriter<'_, V>
+where
+    V: VectorAccessor,
+{
+    fn encode_raw<B>(&self, _buf: &mut B)
+    where
+        B: BufMut,
+        Self: Sized,
+    {
+        unimplemented!("encode_raw not implemented for protobuf message writer");
+    }
+
+    fn merge_field<B>(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut B,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError>
+    where
+        B: Buf,
+        Self: Sized,
+    {
+        let (field_idx, field) = match self
+            .message_descriptor
+            .field
+            .iter()
+            .enumerate()
+            .find(|(_idx, field)| field.number() == tag as i32)
+        {
+            Some((idx, field)) => (idx, field),
+            None => {
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+                return Ok(());
+            }
+        };
+
+        match field.label() {
+            Label::Repeated => {
+                let ffi_list_vector = self.output.get_vector(field_idx);
+
+                let mut list_entries_vector = FlatVector::from(ffi_list_vector);
+                let list_entry_items = list_entries_vector.as_mut_slice::<duckdb_list_entry>();
+
+                fn find_next_offset(
+                    items: &[duckdb_list_entry],
+                    output_row_idx: usize,
+                ) -> Option<u64> {
+                    if output_row_idx == 0 {
+                        return None;
+                    }
+
+                    let Some(it) = items[0..output_row_idx]
+                        .iter()
+                        .rev()
+                        .find(|it| it.length != 0)
+                    else {
+                        return None;
+                    };
+
+                    Some(it.offset + it.length)
+                }
+
+                // Whether this repeated field has been seen before when handling this message. Used
+                // to initialize list entry values.
+                let has_seen = self.seen_repeated_fields.get(&field_idx).is_some();
+                self.seen_repeated_fields.insert(field_idx);
+                if !has_seen {
+                    let next_offset =
+                        find_next_offset(list_entry_items, self.output_row_idx).unwrap_or(0);
+                    let mut list_entry = &mut list_entry_items[self.output_row_idx];
+                    list_entry.offset = next_offset;
+                    list_entry.length = 0;
+                }
+
+                let mut list_entry = &mut list_entry_items[self.output_row_idx];
+
+                let row_idx = list_entry.offset as usize + list_entry.length as usize;
+                let needed_length = row_idx + 1;
+
+                unsafe { duckdb_list_vector_reserve(ffi_list_vector, needed_length as _) };
+                unsafe { duckdb_list_vector_set_size(ffi_list_vector, needed_length as _) };
+                let ffi_list_child_vector =
+                    unsafe { duckdb_list_vector_get_child(ffi_list_vector) };
+
+                list_entry.length += 1;
+
+                self.merge_dynamic_field(
+                    field,
+                    wire_type,
+                    buf,
+                    ctx,
+                    ffi_list_child_vector,
+                    row_idx,
+                )?;
+            }
+            Label::Optional | Label::Required => {
+                let row_idx: usize = self.output_row_idx;
+                let output_vector = self.output.get_vector(field_idx);
+                self.merge_dynamic_field(field, wire_type, buf, ctx, output_vector, row_idx)?;
             }
         };
 
