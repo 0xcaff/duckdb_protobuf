@@ -20,8 +20,8 @@ use duckdb::vtab::{
 };
 use duckdb::Connection;
 use duckdb_loadable_macros::duckdb_entrypoint;
-use prost::bytes::{Buf, BufMut};
-use prost::encoding::{message, DecodeContext, WireType};
+use prost::bytes::Buf;
+use prost::encoding::{check_wire_type, decode_key, decode_varint, DecodeContext, WireType};
 use prost::{DecodeError, Message};
 use prost_types::field_descriptor_proto::{Label, Type};
 use prost_types::{DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorSet};
@@ -352,7 +352,9 @@ impl VTab for ProtobufVTab {
                 output,
             };
 
-            protobuf_message_writer.merge(bytes.as_slice())?;
+            let decode_context = DecodeContext::default();
+
+            protobuf_message_writer.merge(bytes.as_slice(), decode_context)?;
 
             items += 1;
         }
@@ -390,19 +392,6 @@ impl ColumnKey {
     }
 }
 
-struct ProtobufMessageWriter<'a, V: VectorAccessor> {
-    base_column_key: ColumnKey,
-    column_information: &'a mut HashMap<ColumnKey, u64>,
-    seen_repeated_fields: HashSet<usize>,
-    descriptors: &'a FileDescriptorSet,
-    message_descriptor: &'a DescriptorProto,
-    output: &'a V,
-    output_row_idx: usize,
-}
-
-unsafe impl<V: VectorAccessor> Sync for ProtobufMessageWriter<'_, V> {}
-unsafe impl<V: VectorAccessor> Send for ProtobufMessageWriter<'_, V> {}
-
 impl<V: VectorAccessor> fmt::Debug for ProtobufMessageWriter<'_, V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProtobufMessageWriter")
@@ -436,123 +425,27 @@ impl VectorAccessor for StructVector {
     }
 }
 
-impl<V: VectorAccessor> ProtobufMessageWriter<'_, V> {
-    fn merge_single_field<B: Buf>(
-        &mut self,
-        field: &FieldDescriptorProto,
-        wire_type: WireType,
-        buf: &mut B,
-        ctx: DecodeContext,
-        output_vector: duckdb_vector,
-        row_idx: usize,
-    ) -> Result<(), DecodeError> {
-        macro_rules! generate_match_arm {
-            ($merge_fn:path, $slice_type:ty) => {{
-                let mut value = <$slice_type>::default();
-                $merge_fn(wire_type, &mut value, buf, ctx)?;
-
-                let mut vector = FlatVector::from(output_vector);
-                vector.as_mut_slice::<$slice_type>()[row_idx] = value;
-            }};
-        }
-
-        match field.r#type() {
-            Type::Message => {
-                let output = unsafe { StructVector::new(output_vector) };
-
-                let message_type_name =
-                    get_type_name(field).map_err(|err| DecodeError::new(err))?;
-
-                let mut writer = ProtobufMessageWriter {
-                    seen_repeated_fields: Default::default(),
-                    base_column_key: self.base_column_key.extending(ColumnKeyElement::Field {
-                        field_tag: field.number(),
-                    }),
-                    column_information: self.column_information,
-                    descriptors: self.descriptors,
-                    message_descriptor: get_message_matching(&self.descriptors, message_type_name)
-                        .ok_or_else(|| {
-                            DecodeError::new(format!(
-                                "message type not found in descriptor: {}",
-                                message_type_name
-                            ))
-                        })?,
-                    output_row_idx: row_idx,
-                    output: &output,
-                };
-
-                message::merge(
-                    WireType::LengthDelimited,
-                    &mut writer,
-                    buf,
-                    DecodeContext::default(),
-                )?;
-            }
-            Type::Enum => {
-                let enum_type_name = get_type_name(field).map_err(|err| DecodeError::new(err))?;
-
-                let enum_descriptor = get_enum_matching(&self.descriptors, enum_type_name)
-                    .ok_or_else(|| {
-                        DecodeError::new(format!(
-                            "enum type not found in descriptor: {}",
-                            field.type_name()
-                        ))
-                    })?;
-
-                let mut enum_value = <i32>::default();
-                prost::encoding::int32::merge(wire_type, &mut enum_value, buf, ctx)?;
-
-                let vector = FlatVector::from(output_vector);
-
-                match enum_descriptor
-                    .value
-                    .iter()
-                    .find(|value| value.number() == enum_value)
-                {
-                    None => {
-                        vector.insert(row_idx, format!("unknown={}", enum_value).as_str());
-                    }
-                    Some(value) => {
-                        vector.insert(row_idx, value.name());
-                    }
-                };
-            }
-            Type::String => {
-                let mut value = <String>::default();
-                prost::encoding::string::merge(wire_type, &mut value, buf, ctx)?;
-
-                let vector = FlatVector::from(output_vector);
-                vector.insert(row_idx, value.as_str());
-            }
-            Type::Uint32 => generate_match_arm!(prost::encoding::uint32::merge, u32),
-            Type::Uint64 => generate_match_arm!(prost::encoding::uint64::merge, u64),
-            Type::Double => generate_match_arm!(prost::encoding::double::merge, f64),
-            Type::Float => generate_match_arm!(prost::encoding::float::merge, f32),
-            Type::Int64 => generate_match_arm!(prost::encoding::int64::merge, i64),
-            Type::Int32 => generate_match_arm!(prost::encoding::int32::merge, i32),
-            Type::Bool => generate_match_arm!(prost::encoding::bool::merge, bool),
-            field_type => {
-                return Err(DecodeError::new(format!(
-                    "unhandled field type: {}",
-                    field_type.as_str_name()
-                )));
-            }
-        };
-
-        Ok(())
-    }
+struct ProtobufMessageWriter<'a, V: VectorAccessor> {
+    base_column_key: ColumnKey,
+    column_information: &'a mut HashMap<ColumnKey, u64>,
+    seen_repeated_fields: HashSet<usize>,
+    descriptors: &'a FileDescriptorSet,
+    message_descriptor: &'a DescriptorProto,
+    output: &'a V,
+    output_row_idx: usize,
 }
 
-impl<V> prost::Message for ProtobufMessageWriter<'_, V>
+impl<V> ProtobufMessageWriter<'_, V>
 where
     V: VectorAccessor,
 {
-    fn encode_raw<B>(&self, _buf: &mut B)
-    where
-        B: BufMut,
-        Self: Sized,
-    {
-        unimplemented!("encode_raw not implemented for protobuf message writer");
+    fn merge(&mut self, mut buf: impl Buf, ctx: DecodeContext) -> Result<(), DecodeError> {
+        while buf.has_remaining() {
+            let (tag, wire_type) = decode_key(&mut buf)?;
+            self.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
+        }
+
+        Ok(())
     }
 
     fn merge_field<B>(
@@ -641,12 +534,120 @@ where
         Ok(())
     }
 
-    fn encoded_len(&self) -> usize {
-        unimplemented!("encoding not implemented for protobuf message writer");
-    }
+    fn merge_single_field<B: Buf>(
+        &mut self,
+        field: &FieldDescriptorProto,
+        wire_type: WireType,
+        buf: &mut B,
+        ctx: DecodeContext,
+        output_vector: duckdb_vector,
+        row_idx: usize,
+    ) -> Result<(), DecodeError> {
+        macro_rules! generate_match_arm {
+            ($merge_fn:path, $slice_type:ty) => {{
+                let mut value = <$slice_type>::default();
+                $merge_fn(wire_type, &mut value, buf, ctx)?;
 
-    fn clear(&mut self) {
-        unimplemented!("clear not implemented for protobuf message writer")
+                let mut vector = FlatVector::from(output_vector);
+                vector.as_mut_slice::<$slice_type>()[row_idx] = value;
+            }};
+        }
+
+        match field.r#type() {
+            Type::Message => {
+                let output = unsafe { StructVector::new(output_vector) };
+
+                let message_type_name =
+                    get_type_name(field).map_err(|err| DecodeError::new(err))?;
+
+                let mut writer = ProtobufMessageWriter {
+                    seen_repeated_fields: Default::default(),
+                    base_column_key: self.base_column_key.extending(ColumnKeyElement::Field {
+                        field_tag: field.number(),
+                    }),
+                    column_information: self.column_information,
+                    descriptors: self.descriptors,
+                    message_descriptor: get_message_matching(&self.descriptors, message_type_name)
+                        .ok_or_else(|| {
+                            DecodeError::new(format!(
+                                "message type not found in descriptor: {}",
+                                message_type_name
+                            ))
+                        })?,
+                    output_row_idx: row_idx,
+                    output: &output,
+                };
+
+                check_wire_type(WireType::LengthDelimited, wire_type)?;
+
+                let len = decode_varint(buf)?;
+                let remaining = buf.remaining();
+                if len > remaining as u64 {
+                    return Err(DecodeError::new("buffer underflow"));
+                }
+
+                let limit = remaining - len as usize;
+                while buf.remaining() > limit {
+                    let (tag, wire_type) = decode_key(buf)?;
+                    writer.merge_field(tag, wire_type, buf, Default::default())?;
+                }
+
+                if buf.remaining() != limit {
+                    return Err(DecodeError::new("delimited length exceeded"));
+                }
+            }
+            Type::Enum => {
+                let enum_type_name = get_type_name(field).map_err(|err| DecodeError::new(err))?;
+
+                let enum_descriptor = get_enum_matching(&self.descriptors, enum_type_name)
+                    .ok_or_else(|| {
+                        DecodeError::new(format!(
+                            "enum type not found in descriptor: {}",
+                            field.type_name()
+                        ))
+                    })?;
+
+                let mut enum_value = <i32>::default();
+                prost::encoding::int32::merge(wire_type, &mut enum_value, buf, ctx)?;
+
+                let vector = FlatVector::from(output_vector);
+
+                match enum_descriptor
+                    .value
+                    .iter()
+                    .find(|value| value.number() == enum_value)
+                {
+                    None => {
+                        vector.insert(row_idx, format!("unknown={}", enum_value).as_str());
+                    }
+                    Some(value) => {
+                        vector.insert(row_idx, value.name());
+                    }
+                };
+            }
+            Type::String => {
+                let mut value = <String>::default();
+                prost::encoding::string::merge(wire_type, &mut value, buf, ctx)?;
+
+                let vector = FlatVector::from(output_vector);
+                vector.insert(row_idx, value.as_str());
+            }
+            Type::Uint32 => generate_match_arm!(prost::encoding::uint32::merge, u32),
+            Type::Uint64 => generate_match_arm!(prost::encoding::uint64::merge, u64),
+            Type::Double => generate_match_arm!(prost::encoding::double::merge, f64),
+            Type::Float => generate_match_arm!(prost::encoding::float::merge, f32),
+            Type::Int64 => generate_match_arm!(prost::encoding::int64::merge, i64),
+            Type::Int32 => generate_match_arm!(prost::encoding::int32::merge, i32),
+            Type::Bool => generate_match_arm!(prost::encoding::bool::merge, bool),
+            field_type => {
+                return Err(DecodeError::new(format!(
+                    "unhandled field type: {}",
+                    field_type.as_str_name()
+                )));
+            }
+        };
+
+        Ok(())
     }
 }
 
