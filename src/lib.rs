@@ -286,12 +286,9 @@ impl VTab for ProtobufVTab {
     fn bind(bind: &BindInfo, data: *mut Self::BindData) -> duckdb::Result<(), Box<dyn Error>> {
         let params = Parameters::from_bind_info(bind)?;
 
-        for (idx, field_descriptor) in params.message_descriptor.field.iter().enumerate() {
+        for field_descriptor in &params.message_descriptor.field {
             bind.add_result_column(
-                field_descriptor
-                    .json_name
-                    .as_ref()
-                    .ok_or(format!("no field json_name for index: {}", idx))?,
+                field_descriptor.json_name().as_ref(),
                 into_logical_type(field_descriptor, &params.descriptors)?,
             );
         }
