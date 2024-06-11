@@ -42,7 +42,7 @@ impl Free for ProtobufBindData {
 
 #[repr(C)]
 struct ProtobufInitData {
-    files_reader: *mut FilesReader,
+    files_reader: *mut RecordsReader,
 }
 
 impl Free for ProtobufInitData {
@@ -57,14 +57,14 @@ impl Free for ProtobufInitData {
     }
 }
 
-struct FilesReader {
+struct RecordsReader {
     files_iterator: glob::Paths,
     current_file: Option<LengthDelimitedRecordsReader<File>>,
 }
 
-impl FilesReader {
-    pub fn new(params: &Parameters) -> Result<FilesReader, Box<dyn Error>> {
-        Ok(FilesReader {
+impl RecordsReader {
+    pub fn new(params: &Parameters) -> Result<RecordsReader, Box<dyn Error>> {
+        Ok(RecordsReader {
             files_iterator: glob::glob(params.files.as_str())?,
             current_file: None,
         })
@@ -308,7 +308,7 @@ impl VTab for ProtobufVTab {
 
         unsafe {
             let parameters = &*(&*bind_date).parameters;
-            (*data).files_reader = Box::into_raw(Box::new(FilesReader::new(parameters)?));
+            (*data).files_reader = Box::into_raw(Box::new(RecordsReader::new(parameters)?));
         }
 
         Ok(())
