@@ -1,3 +1,5 @@
+mod descriptors;
+
 use core::fmt;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -8,6 +10,7 @@ use std::io;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 
+use crate::descriptors::{FieldDescriptorProtoExt, FileDescriptorSetExt};
 use byteorder::{BigEndian, ReadBytesExt};
 use duckdb::ffi;
 use duckdb::ffi::{
@@ -24,7 +27,7 @@ use prost::bytes::Buf;
 use prost::encoding::{check_wire_type, decode_key, decode_varint, DecodeContext, WireType};
 use prost::{DecodeError, Message};
 use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::{DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorSet};
+use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorSet};
 
 struct ProtobufVTab;
 
@@ -142,40 +145,6 @@ struct Parameters {
     descriptors: FileDescriptorSet,
 }
 
-pub fn get_message_matching<'a>(
-    descriptor_set: &'a FileDescriptorSet,
-    name: &str,
-) -> Option<&'a DescriptorProto> {
-    for file_descriptor in &descriptor_set.file {
-        let package_name = file_descriptor.package();
-
-        for message_descriptor in &file_descriptor.message_type {
-            if &format!("{}.{}", package_name, message_descriptor.name()) == name {
-                return Some(message_descriptor);
-            }
-        }
-    }
-
-    None
-}
-
-pub fn get_enum_matching<'a>(
-    descriptor_set: &'a FileDescriptorSet,
-    name: &str,
-) -> Option<&'a EnumDescriptorProto> {
-    for file_descriptor in &descriptor_set.file {
-        let package_name = file_descriptor.package();
-
-        for enum_descriptor in &file_descriptor.enum_type {
-            if &format!("{}.{}", package_name, enum_descriptor.name()) == name {
-                return Some(enum_descriptor);
-            }
-        }
-    }
-
-    None
-}
-
 impl Parameters {
     pub fn from_bind_info(bind: &BindInfo) -> Result<Self, Box<dyn Error>> {
         let files = bind
@@ -201,7 +170,8 @@ impl Parameters {
             .ok_or("missing argument message_type")?
             .to_string();
 
-        let message_descriptor = get_message_matching(&descriptors, &message_name.as_str())
+        let message_descriptor = descriptors
+            .message_matching(&message_name.as_str())
             .ok_or("message type not found in descriptor")?;
 
         Ok(Self {
@@ -242,25 +212,16 @@ pub fn into_logical_type(
     }
 }
 
-pub fn get_type_name(field: &FieldDescriptorProto) -> Result<&str, String> {
-    let type_name = field.type_name();
-    let (prefix, absolute_type_name) = type_name.split_at(1);
-    if prefix != "." {
-        return Err(format!("invalid type name: {}", type_name));
-    }
-
-    Ok(absolute_type_name)
-}
-
 pub fn into_logical_type_single(
     field: &FieldDescriptorProto,
     descriptors: &FileDescriptorSet,
 ) -> Result<LogicalType, Box<dyn Error>> {
     let value = match field.r#type() {
         Type::Message => {
-            let type_name = get_type_name(field)?;
+            let type_name = field.fully_qualified_type_name()?;
 
-            let message_descriptor = get_message_matching(descriptors, type_name)
+            let message_descriptor = descriptors
+                .message_matching(type_name)
                 .ok_or(format!("message type not found: {}", type_name))?;
 
             LogicalType::struct_type(
@@ -557,8 +518,9 @@ where
             Type::Message => {
                 let output = unsafe { StructVector::new(output_vector) };
 
-                let message_type_name =
-                    get_type_name(field).map_err(|err| DecodeError::new(err))?;
+                let message_type_name = field
+                    .fully_qualified_type_name()
+                    .map_err(|err| DecodeError::new(err))?;
 
                 let mut writer = ProtobufMessageWriter {
                     seen_repeated_fields: Default::default(),
@@ -567,7 +529,9 @@ where
                     }),
                     column_information: self.column_information,
                     descriptors: self.descriptors,
-                    message_descriptor: get_message_matching(&self.descriptors, message_type_name)
+                    message_descriptor: self
+                        .descriptors
+                        .message_matching(message_type_name)
                         .ok_or_else(|| {
                             DecodeError::new(format!(
                                 "message type not found in descriptor: {}",
@@ -597,15 +561,19 @@ where
                 }
             }
             Type::Enum => {
-                let enum_type_name = get_type_name(field).map_err(|err| DecodeError::new(err))?;
+                let enum_type_name = field
+                    .fully_qualified_type_name()
+                    .map_err(|err| DecodeError::new(err))?;
 
-                let enum_descriptor = get_enum_matching(&self.descriptors, enum_type_name)
-                    .ok_or_else(|| {
-                        DecodeError::new(format!(
-                            "enum type not found in descriptor: {}",
-                            field.type_name()
-                        ))
-                    })?;
+                let enum_descriptor =
+                    self.descriptors
+                        .enum_matching(enum_type_name)
+                        .ok_or_else(|| {
+                            DecodeError::new(format!(
+                                "enum type not found in descriptor: {}",
+                                field.type_name()
+                            ))
+                        })?;
 
                 let mut enum_value = <i32>::default();
                 prost::encoding::int32::merge(wire_type, &mut enum_value, buf, ctx)?;
