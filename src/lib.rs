@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::{c_char, c_void};
 use std::fmt::Formatter;
@@ -9,19 +9,22 @@ use std::io::Read;
 use std::ops::{Deref, DerefMut};
 
 use byteorder::{BigEndian, ReadBytesExt};
-use duckdb::Connection;
 use duckdb::ffi;
 use duckdb::ffi::{
     duckdb_list_entry, duckdb_list_vector_get_child, duckdb_list_vector_reserve,
     duckdb_list_vector_set_size, duckdb_vector,
 };
-use duckdb::vtab::{BindInfo, DataChunk, FlatVector, Free, FunctionInfo, InitInfo, Inserter, LogicalType, LogicalTypeId, VTab};
+use duckdb::vtab::{
+    BindInfo, DataChunk, FlatVector, Free, FunctionInfo, InitInfo, Inserter, LogicalType,
+    LogicalTypeId, VTab,
+};
+use duckdb::Connection;
 use duckdb_loadable_macros::duckdb_entrypoint;
-use prost::{DecodeError, Message};
 use prost::bytes::{Buf, BufMut};
-use prost::encoding::{DecodeContext, message, WireType};
-use prost_types::{DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorSet};
+use prost::encoding::{message, DecodeContext, WireType};
+use prost::{DecodeError, Message};
 use prost_types::field_descriptor_proto::{Label, Type};
+use prost_types::{DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorSet};
 
 struct ProtobufVTab;
 
@@ -30,13 +33,13 @@ struct Handle<T> {
     inner: *mut T,
 }
 
-impl <T> Handle<T> {
+impl<T> Handle<T> {
     pub fn assign(&mut self, inner: T) {
         self.inner = Box::into_raw(Box::new(inner));
     }
 }
 
-impl <T> Deref for Handle<T> {
+impl<T> Deref for Handle<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -44,21 +47,17 @@ impl <T> Deref for Handle<T> {
             panic!("unable to deref non-null handle")
         }
 
-        unsafe {
-            &*self.inner
-        }
+        unsafe { &*self.inner }
     }
 }
 
-impl <T> DerefMut for Handle<T> {
+impl<T> DerefMut for Handle<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe {
-            &mut *self.inner
-        }
+        unsafe { &mut *self.inner }
     }
 }
 
-impl <T> Free for Handle<T> {
+impl<T> Free for Handle<T> {
     fn free(&mut self) {
         unsafe {
             if self.inner.is_null() {
@@ -299,7 +298,7 @@ impl VTab for ProtobufVTab {
     type BindData = Handle<Parameters>;
 
     fn bind(bind: &BindInfo, data: *mut Self::BindData) -> duckdb::Result<(), Box<dyn Error>> {
-        let data = unsafe {&mut *data};
+        let data = unsafe { &mut *data };
 
         let params = Parameters::from_bind_info(bind)?;
 
@@ -333,6 +332,8 @@ impl VTab for ProtobufVTab {
         let available_chunk_size = output.flat_vector(0).capacity();
         let mut items = 0;
 
+        let mut column_information = Default::default();
+
         for output_row_idx in 0..available_chunk_size {
             let bytes = match init_data.next_message()? {
                 None => break,
@@ -343,6 +344,8 @@ impl VTab for ProtobufVTab {
 
             let mut protobuf_message_writer = ProtobufMessageWriter {
                 seen_repeated_fields: Default::default(),
+                base_column_key: ColumnKey::empty(),
+                column_information: &mut column_information,
                 descriptors: &parameters.descriptors,
                 message_descriptor,
                 output_row_idx,
@@ -364,7 +367,32 @@ impl VTab for ProtobufVTab {
     }
 }
 
+#[derive(Hash, Eq, PartialEq, Clone)]
+enum ColumnKeyElement {
+    Field { field_tag: i32 },
+    List,
+}
+
+#[derive(Hash, Eq, PartialEq)]
+struct ColumnKey {
+    elements: Vec<ColumnKeyElement>,
+}
+
+impl ColumnKey {
+    pub fn extending(&self, key: ColumnKeyElement) -> ColumnKey {
+        let mut elements = self.elements.clone();
+        elements.push(key);
+
+        ColumnKey { elements }
+    }
+    pub fn empty() -> ColumnKey {
+        ColumnKey { elements: vec![] }
+    }
+}
+
 struct ProtobufMessageWriter<'a, V: VectorAccessor> {
+    base_column_key: ColumnKey,
+    column_information: &'a mut HashMap<ColumnKey, u64>,
     seen_repeated_fields: HashSet<usize>,
     descriptors: &'a FileDescriptorSet,
     message_descriptor: &'a DescriptorProto,
@@ -409,8 +437,8 @@ impl VectorAccessor for StructVector {
 }
 
 impl<V: VectorAccessor> ProtobufMessageWriter<'_, V> {
-    fn merge_dynamic_field<B: Buf>(
-        &self,
+    fn merge_single_field<B: Buf>(
+        &mut self,
         field: &FieldDescriptorProto,
         wire_type: WireType,
         buf: &mut B,
@@ -437,6 +465,10 @@ impl<V: VectorAccessor> ProtobufMessageWriter<'_, V> {
 
                 let mut writer = ProtobufMessageWriter {
                     seen_repeated_fields: Default::default(),
+                    base_column_key: self.base_column_key.extending(ColumnKeyElement::Field {
+                        field_tag: field.number(),
+                    }),
+                    column_information: self.column_information,
                     descriptors: self.descriptors,
                     message_descriptor: get_message_matching(&self.descriptors, message_type_name)
                         .ok_or_else(|| {
@@ -555,33 +587,22 @@ where
                 let mut list_entries_vector = FlatVector::from(ffi_list_vector);
                 let list_entry_items = list_entries_vector.as_mut_slice::<duckdb_list_entry>();
 
-                fn find_next_offset(
-                    items: &[duckdb_list_entry],
-                    output_row_idx: usize,
-                ) -> Option<u64> {
-                    if output_row_idx == 0 {
-                        return None;
-                    }
-
-                    let Some(it) = items[0..output_row_idx]
-                        .iter()
-                        .rev()
-                        .find(|it| it.length != 0)
-                    else {
-                        return None;
-                    };
-
-                    Some(it.offset + it.length)
-                }
-
                 // Whether this repeated field has been seen before when handling this message. Used
                 // to initialize list entry values.
                 let has_seen = self.seen_repeated_fields.get(&field_idx).is_some();
                 self.seen_repeated_fields.insert(field_idx);
-                // todo: assumption that first memory value
+                let column_key = self
+                    .base_column_key
+                    .extending(ColumnKeyElement::Field {
+                        field_tag: field.number(),
+                    })
+                    .extending(ColumnKeyElement::List);
                 if !has_seen {
-                    let next_offset =
-                        find_next_offset(list_entry_items, self.output_row_idx).unwrap_or(0);
+                    let next_offset = self
+                        .column_information
+                        .get(&column_key)
+                        .map(|it| *it)
+                        .unwrap_or(0);
                     let list_entry = &mut list_entry_items[self.output_row_idx];
                     list_entry.offset = next_offset;
                     list_entry.length = 0;
@@ -598,8 +619,10 @@ where
                     unsafe { duckdb_list_vector_get_child(ffi_list_vector) };
 
                 list_entry.length += 1;
+                self.column_information
+                    .insert(column_key, needed_length as _);
 
-                self.merge_dynamic_field(
+                self.merge_single_field(
                     field,
                     wire_type,
                     buf,
@@ -611,7 +634,7 @@ where
             Label::Optional | Label::Required => {
                 let row_idx: usize = self.output_row_idx;
                 let output_vector = self.output.get_vector(field_idx);
-                self.merge_dynamic_field(field, wire_type, buf, ctx, output_vector, row_idx)?;
+                self.merge_single_field(field, wire_type, buf, ctx, output_vector, row_idx)?;
             }
         };
 
