@@ -185,8 +185,10 @@ where
             Label::Repeated => {
                 let ffi_list_vector = self.output.get_vector(field_idx);
 
-                let mut list_entries_vector = FlatVector::from(ffi_list_vector);
-                let list_entry_items = list_entries_vector.as_mut_slice::<duckdb_list_entry>();
+                let list_entries_vector = FlatVector::from(ffi_list_vector);
+                let list_entry = unsafe { &mut *list_entries_vector.as_mut_ptr::<duckdb_list_entry>().offset(
+                    self.output_row_idx as _
+                )};
 
                 // Whether this repeated field has been seen before when handling this message. Used
                 // to initialize list entry values.
@@ -204,12 +206,9 @@ where
                         .get(&column_key)
                         .map(|it| *it)
                         .unwrap_or(0);
-                    let list_entry = &mut list_entry_items[self.output_row_idx];
                     list_entry.offset = next_offset;
                     list_entry.length = 0;
                 }
-
-                let list_entry = &mut list_entry_items[self.output_row_idx];
 
                 let row_idx = list_entry.offset as usize + list_entry.length as usize;
                 let needed_length = row_idx + 1;
@@ -256,8 +255,8 @@ where
                 let mut value = <$slice_type>::default();
                 $merge_fn(wire_type, &mut value, buf, ctx)?;
 
-                let mut vector = FlatVector::from(output_vector);
-                vector.as_mut_slice::<$slice_type>()[row_idx] = value;
+                let vector = FlatVector::from(output_vector);
+                unsafe { *vector.as_mut_ptr::<$slice_type>().offset(row_idx as _) = value; }
             }};
         }
 
