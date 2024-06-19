@@ -1,6 +1,6 @@
-mod descriptors;
 mod io;
 mod read;
+mod types;
 mod vtab;
 
 use std::error::Error;

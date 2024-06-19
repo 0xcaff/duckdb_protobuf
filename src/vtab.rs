@@ -1,21 +1,21 @@
-use crate::descriptors::FileDescriptorSetExt;
-use crate::io::RecordsReader;
-use crate::read::{into_logical_type, ColumnKey, ProtobufMessageWriter};
-use duckdb::vtab::{
-    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
-};
-use prost::encoding::DecodeContext;
-use prost::Message;
-use prost_types::{DescriptorProto, FileDescriptorSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 
+use duckdb::vtab::{
+    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
+};
+use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
+
+use crate::io::RecordsReader;
+use crate::read::write_to_output;
+use crate::types::into_logical_type;
+
 pub struct Parameters {
     pub files: String,
-    pub message_descriptor: DescriptorProto,
-    pub descriptors: FileDescriptorSet,
+    pub message_descriptor: MessageDescriptor,
+    pub pool: DescriptorPool,
 }
 
 impl Parameters {
@@ -25,7 +25,7 @@ impl Parameters {
             .ok_or("missing argument files")?
             .to_string();
 
-        let descriptors = {
+        let pool = {
             let descriptor = bind
                 .get_named_parameter("descriptors")
                 .ok_or("missing argument descriptor")?
@@ -35,7 +35,7 @@ impl Parameters {
             let mut buffer = Vec::new();
             file.read_to_end(&mut buffer)?;
 
-            FileDescriptorSet::decode(buffer.as_slice())?
+            DescriptorPool::decode(buffer.as_slice())?
         };
 
         let message_name = bind
@@ -43,14 +43,14 @@ impl Parameters {
             .ok_or("missing argument message_type")?
             .to_string();
 
-        let message_descriptor = descriptors
-            .message_matching(&message_name.as_str())
+        let message_descriptor = pool
+            .get_message_by_name(&message_name.as_str())
             .ok_or("message type not found in descriptor")?;
 
         Ok(Self {
             files,
-            message_descriptor: message_descriptor.clone(),
-            descriptors,
+            message_descriptor,
+            pool,
         })
     }
 
@@ -83,10 +83,10 @@ impl VTab for ProtobufVTab {
 
         let params = Parameters::from_bind_info(bind)?;
 
-        for field_descriptor in &params.message_descriptor.field {
+        for field_descriptor in params.message_descriptor.fields() {
             bind.add_result_column(
                 field_descriptor.json_name().as_ref(),
-                into_logical_type(field_descriptor, &params.descriptors)?,
+                into_logical_type(&field_descriptor)?,
             );
         }
 
@@ -121,21 +121,16 @@ impl VTab for ProtobufVTab {
                 Some(bytes) => bytes,
             };
 
-            let message_descriptor = &parameters.message_descriptor;
+            let message =
+                DynamicMessage::decode(parameters.message_descriptor.clone(), bytes.as_slice())?;
 
-            let mut protobuf_message_writer = ProtobufMessageWriter {
-                seen_repeated_fields: Default::default(),
-                base_column_key: ColumnKey::empty(),
-                column_information: &mut column_information,
-                descriptors: &parameters.descriptors,
-                message_descriptor,
-                output_row_idx,
+            write_to_output(
+                &mut column_information,
+                &message,
                 output,
-            };
-
-            let decode_context = DecodeContext::default();
-
-            protobuf_message_writer.merge(bytes.as_slice(), decode_context)?;
+                available_chunk_size,
+                output_row_idx,
+            )?;
 
             items += 1;
         }

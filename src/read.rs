@@ -1,85 +1,276 @@
-use crate::descriptors::{FieldDescriptorProtoExt, FileDescriptorSetExt};
-use duckdb::ffi;
-use duckdb::ffi::{
-    duckdb_list_entry, duckdb_list_vector_get_child, duckdb_list_vector_reserve,
-    duckdb_list_vector_set_size, duckdb_vector,
-};
-use duckdb::vtab::{DataChunk, FlatVector, Inserter, LogicalType, LogicalTypeId};
-use prost::bytes::Buf;
-use prost::encoding::{check_wire_type, decode_key, decode_varint, DecodeContext, WireType};
-use prost::DecodeError;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorSet};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::error::Error;
+use std::ffi::CString;
+use std::marker::PhantomData;
+use std::slice;
+use duckdb::ffi::duckdb_vector_get_column_type;
 
-pub fn into_logical_type(
-    field: &FieldDescriptorProto,
-    descriptors: &FileDescriptorSet,
-) -> Result<LogicalType, Box<dyn Error>> {
-    match field.label() {
-        Label::Repeated => Ok(LogicalType::list(&into_logical_type_single(
-            field,
-            descriptors,
-        )?)),
-        Label::Optional | Label::Required => Ok(into_logical_type_single(field, descriptors)?),
+use duckdb::vtab::{DataChunk, LogicalType};
+use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
+
+pub fn write_to_output(
+    columns_state: &mut HashMap<ColumnKey, u64>,
+    value: &DynamicMessage,
+    output: &DataChunk,
+    max_rows: usize,
+    row_idx: usize,
+) -> Result<(), Box<dyn Error>> {
+    write_message(
+        columns_state,
+        &ColumnKey::empty(),
+        value,
+        output,
+        max_rows,
+        row_idx,
+    )
+}
+
+pub fn write_message(
+    columns_state: &mut HashMap<ColumnKey, u64>,
+    column_key: &ColumnKey,
+    value: &DynamicMessage,
+    output: &impl VectorAccessor,
+    max_rows: usize,
+    row_idx: usize,
+) -> Result<(), Box<dyn Error>> {
+    for (field_idx, field_descriptor) in value.descriptor().fields().enumerate() {
+        let column_vector = output.get_vector(field_idx);
+        let value = value.get_field(&field_descriptor);
+
+        let column_key = column_key.field(&field_descriptor);
+
+        write_column(
+            columns_state,
+            &column_key,
+            &value,
+            &field_descriptor,
+            column_vector,
+            max_rows,
+            row_idx,
+        )?;
+    }
+
+    Ok(())
+}
+
+struct MyFlatVector<T> {
+    _phantom_data: PhantomData<T>,
+    ptr: duckdb::ffi::duckdb_vector,
+    capacity: usize,
+}
+
+impl<T> MyFlatVector<T> {
+    pub unsafe fn with_capacity(ptr: duckdb::ffi::duckdb_vector, capacity: usize) -> Self {
+        Self {
+            _phantom_data: Default::default(),
+            ptr,
+            capacity,
+        }
+    }
+
+    fn as_mut_ptr(&self) -> *mut T {
+        unsafe { duckdb::ffi::duckdb_vector_get_data(self.ptr).cast() }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity) }
+    }
+
+    pub fn logical_type(&self) -> LogicalType {
+        LogicalType::from(unsafe { duckdb_vector_get_column_type(self.ptr) })
     }
 }
 
-pub fn into_logical_type_single(
-    field: &FieldDescriptorProto,
-    descriptors: &FileDescriptorSet,
-) -> Result<LogicalType, Box<dyn Error>> {
-    let value = match field.r#type() {
-        Type::Message => {
-            let type_name = field.fully_qualified_type_name()?;
+pub fn write_column(
+    columns_state: &mut HashMap<ColumnKey, u64>,
+    column_key: &ColumnKey,
+    value: &Value,
+    field_descriptor: &FieldDescriptor,
+    column: duckdb::ffi::duckdb_vector,
+    max_rows: usize,
+    row_idx: usize,
+) -> Result<(), Box<dyn Error>> {
+    match field_descriptor.cardinality() {
+        Cardinality::Repeated => {
+            let column_key = column_key.extending(ColumnKeyElement::List);
 
-            let message_descriptor = descriptors
-                .message_matching(type_name)
-                .ok_or(format!("message type not found: {}", type_name))?;
+            let mut list_entries_vector = unsafe {
+                MyFlatVector::<duckdb::ffi::duckdb_list_entry>::with_capacity(column, max_rows)
+            };
+            let list_entry = &mut list_entries_vector.as_mut_slice()[row_idx];
 
-            LogicalType::struct_type(
-                &message_descriptor
-                    .field
-                    .iter()
-                    .map(|field| Ok((field.name(), into_logical_type(field, descriptors)?)))
-                    .collect::<Result<Vec<(&str, LogicalType)>, Box<dyn Error>>>()?,
-            )
+            let values = value.as_list().ok_or("expected list")?;
+
+            let next_offset_ref = columns_state.get_mut(&column_key);
+            let next_offset = if let Some(it) = &next_offset_ref {
+                **it
+            } else {
+                0
+            };
+
+            let len_u64 = u64::try_from(values.len())?;
+
+            list_entry.offset = next_offset;
+            list_entry.length = len_u64;
+
+            let new_next_offset = next_offset + len_u64;
+
+            if let Some(it) = next_offset_ref {
+                *it = new_next_offset;
+            } else {
+                columns_state.insert(column_key.clone(), new_next_offset);
+            }
+
+            let new_length = new_next_offset;
+
+            unsafe { duckdb::ffi::duckdb_list_vector_reserve(column, new_length) };
+            unsafe { duckdb::ffi::duckdb_list_vector_set_size(column, new_length) };
+
+            let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(column) };
+
+            for (idx, value) in values.iter().enumerate() {
+                let row_idx = next_offset as usize + idx;
+
+                write_single_column(
+                    columns_state,
+                    &column_key,
+                    value,
+                    field_descriptor,
+                    child_vector,
+                    new_length as usize,
+                    row_idx,
+                )?;
+            }
         }
-        Type::Enum => LogicalType::new(LogicalTypeId::Varchar),
-        Type::String => LogicalType::new(LogicalTypeId::Varchar),
-        Type::Uint32 => LogicalType::new(LogicalTypeId::UInteger),
-        Type::Uint64 => LogicalType::new(LogicalTypeId::UBigint),
-        Type::Double => LogicalType::new(LogicalTypeId::Double),
-        Type::Float => LogicalType::new(LogicalTypeId::Float),
-        Type::Int32 => LogicalType::new(LogicalTypeId::Integer),
-        Type::Int64 => LogicalType::new(LogicalTypeId::Bigint),
-        Type::Bool => LogicalType::new(LogicalTypeId::Boolean),
-        logical_type => {
-            return Err(format!(
-                "unhandled field: {}, type: {}",
-                field.name(),
-                logical_type.as_str_name()
-            )
-            .into())
+        Cardinality::Optional | Cardinality::Required => {
+            write_single_column(
+                columns_state,
+                column_key,
+                value,
+                field_descriptor,
+                column,
+                max_rows,
+                row_idx,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn write_single_column(
+    columns_state: &mut HashMap<ColumnKey, u64>,
+    column_key: &ColumnKey,
+    value: &Value,
+    field_descriptor: &FieldDescriptor,
+    column: duckdb::ffi::duckdb_vector,
+    max_rows: usize,
+    row_idx: usize,
+) -> Result<(), Box<dyn Error>> {
+    match field_descriptor.kind() {
+        Kind::Message(..) => {
+            let message = value.as_message().ok_or("expected message")?;
+
+            let source = unsafe { StructVector::new(column) };
+
+            write_message(
+                columns_state,
+                column_key,
+                message,
+                &source,
+                max_rows,
+                row_idx,
+            )?;
+        }
+        Kind::Enum(enum_descriptor) => {
+            let enum_value = value.as_enum_number().ok_or("expected enum value")?;
+
+            let enum_value_descriptor = enum_descriptor
+                .get_value(enum_value)
+                .unwrap_or_else(|| enum_descriptor.default_value());
+            let name = CString::new(enum_value_descriptor.name())?;
+
+            unsafe {
+                duckdb::ffi::duckdb_vector_assign_string_element(
+                    column,
+                    row_idx as u64,
+                    name.as_ptr(),
+                )
+            };
+        }
+        Kind::String => {
+            let value = value.as_str().ok_or("expected string")?;
+            let value = CString::new(value)?;
+
+            unsafe {
+                duckdb::ffi::duckdb_vector_assign_string_element(
+                    column,
+                    row_idx as u64,
+                    value.as_ptr(),
+                )
+            };
+        }
+        Kind::Double => {
+            let value = value.as_f64().ok_or("expected double")?;
+            let mut vector = unsafe { MyFlatVector::<f64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = value;
+        }
+        Kind::Float => {
+            let value = value.as_f32().ok_or("expected float")?;
+            let mut vector = unsafe { MyFlatVector::<f32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = value;
+        }
+        Kind::Int32 => {
+            let value = value.as_i32().ok_or("expected int32")?;
+            let mut vector = unsafe { MyFlatVector::<i32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = value;
+        }
+        Kind::Int64 => {
+            let value = value.as_i64().ok_or("expected int64")?;
+            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = value;
+        }
+        Kind::Uint32 => {
+            let value = value.as_u32().ok_or("expected uint32")?;
+            let mut vector = unsafe { MyFlatVector::<u32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = value;
+        }
+        Kind::Uint64 => {
+            let value = value.as_u64().ok_or("expected uint64")?;
+            let mut vector = unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = value;
+        }
+        Kind::Bool => {
+            let value = value.as_bool().ok_or("expected bool")?;
+            let mut vector = unsafe { MyFlatVector::<bool>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = value;
+        }
+        _ => {
+            return Err("unhandled field type".into());
         }
     };
 
-    Ok(value)
+    Ok(())
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub enum ColumnKeyElement {
-    Field { field_tag: i32 },
+    Field { field_tag: u32 },
     List,
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub struct ColumnKey {
     pub elements: Vec<ColumnKeyElement>,
 }
 
 impl ColumnKey {
+    pub fn field(&self, field: &FieldDescriptor) -> ColumnKey {
+        self.extending(ColumnKeyElement::Field {
+            field_tag: field.number(),
+        })
+    }
+
     pub fn extending(&self, key: ColumnKeyElement) -> ColumnKey {
         let mut elements = self.elements.clone();
         elements.push(key);
@@ -99,268 +290,20 @@ impl VectorAccessor for DataChunk {
     fn get_vector(&self, column_idx: usize) -> duckdb::ffi::duckdb_vector {
         let chunk = self.get_ptr();
 
-        unsafe { ffi::duckdb_data_chunk_get_vector(chunk, column_idx as u64) }
+        unsafe { duckdb::ffi::duckdb_data_chunk_get_vector(chunk, column_idx as u64) }
     }
 }
 
 struct StructVector(duckdb::ffi::duckdb_vector);
 
 impl StructVector {
-    unsafe fn new(value: duckdb_vector) -> Self {
+    unsafe fn new(value: duckdb::ffi::duckdb_vector) -> Self {
         Self(value)
     }
 }
 
 impl VectorAccessor for StructVector {
-    fn get_vector(&self, idx: usize) -> duckdb_vector {
-        unsafe { ffi::duckdb_struct_vector_get_child(self.0, idx as u64) }
-    }
-}
-
-pub struct ProtobufMessageWriter<'a, V: VectorAccessor> {
-    pub base_column_key: ColumnKey,
-    pub column_information: &'a mut HashMap<ColumnKey, u64>,
-    pub seen_repeated_fields: HashSet<usize>,
-    pub descriptors: &'a FileDescriptorSet,
-    pub message_descriptor: &'a DescriptorProto,
-    pub output: &'a V,
-    pub output_row_idx: usize,
-}
-
-impl<V> ProtobufMessageWriter<'_, V>
-where
-    V: VectorAccessor,
-{
-    pub fn merge(&mut self, mut buf: impl Buf, ctx: DecodeContext) -> Result<(), DecodeError> {
-        let mut seen_tags = HashSet::new();
-
-        while buf.has_remaining() {
-            let (tag, wire_type) = decode_key(&mut buf)?;
-            self.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
-
-            seen_tags.insert(tag as i32);
-        }
-
-        for (field_idx, _field) in self
-            .message_descriptor
-            .field
-            .iter()
-            .enumerate()
-            .filter(|(_, it)| !seen_tags.contains(&it.number()))
-        {
-            // todo: use protobuf default values
-            let mut column_vector = FlatVector::from(self.output.get_vector(field_idx));
-            column_vector.set_null(self.output_row_idx);
-        }
-
-        Ok(())
-    }
-
-    fn merge_field<B>(
-        &mut self,
-        tag: u32,
-        wire_type: WireType,
-        buf: &mut B,
-        ctx: DecodeContext,
-    ) -> Result<(), DecodeError>
-    where
-        B: Buf,
-        Self: Sized,
-    {
-        let (field_idx, field) = match self
-            .message_descriptor
-            .field
-            .iter()
-            .enumerate()
-            .find(|(_idx, field)| field.number() == tag as i32)
-        {
-            Some((idx, field)) => (idx, field),
-            None => {
-                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
-                return Ok(());
-            }
-        };
-
-        match field.label() {
-            Label::Repeated => {
-                let ffi_list_vector = self.output.get_vector(field_idx);
-
-                let list_entries_vector = FlatVector::from(ffi_list_vector);
-                let list_entry = unsafe { &mut *list_entries_vector.as_mut_ptr::<duckdb_list_entry>().offset(
-                    self.output_row_idx as _
-                )};
-
-                // Whether this repeated field has been seen before when handling this message. Used
-                // to initialize list entry values.
-                let has_seen = self.seen_repeated_fields.get(&field_idx).is_some();
-                self.seen_repeated_fields.insert(field_idx);
-                let column_key = self
-                    .base_column_key
-                    .extending(ColumnKeyElement::Field {
-                        field_tag: field.number(),
-                    })
-                    .extending(ColumnKeyElement::List);
-                if !has_seen {
-                    let next_offset = self
-                        .column_information
-                        .get(&column_key)
-                        .map(|it| *it)
-                        .unwrap_or(0);
-                    list_entry.offset = next_offset;
-                    list_entry.length = 0;
-                }
-
-                let row_idx = list_entry.offset as usize + list_entry.length as usize;
-                let needed_length = row_idx + 1;
-
-                unsafe { duckdb_list_vector_reserve(ffi_list_vector, needed_length as _) };
-                unsafe { duckdb_list_vector_set_size(ffi_list_vector, needed_length as _) };
-                let ffi_list_child_vector =
-                    unsafe { duckdb_list_vector_get_child(ffi_list_vector) };
-
-                list_entry.length += 1;
-                self.column_information
-                    .insert(column_key, needed_length as _);
-
-                self.merge_single_field(
-                    field,
-                    wire_type,
-                    buf,
-                    ctx,
-                    ffi_list_child_vector,
-                    row_idx,
-                )?;
-            }
-            Label::Optional | Label::Required => {
-                let row_idx: usize = self.output_row_idx;
-                let output_vector = self.output.get_vector(field_idx);
-                self.merge_single_field(field, wire_type, buf, ctx, output_vector, row_idx)?;
-            }
-        };
-
-        Ok(())
-    }
-
-    fn merge_single_field<B: Buf>(
-        &mut self,
-        field: &FieldDescriptorProto,
-        wire_type: WireType,
-        buf: &mut B,
-        ctx: DecodeContext,
-        output_vector: duckdb_vector,
-        row_idx: usize,
-    ) -> Result<(), DecodeError> {
-        macro_rules! generate_match_arm {
-            ($merge_fn:path, $slice_type:ty) => {{
-                let mut value = <$slice_type>::default();
-                $merge_fn(wire_type, &mut value, buf, ctx)?;
-
-                let vector = FlatVector::from(output_vector);
-                unsafe { *vector.as_mut_ptr::<$slice_type>().offset(row_idx as _) = value; }
-            }};
-        }
-
-        match field.r#type() {
-            Type::Message => {
-                let output = unsafe { StructVector::new(output_vector) };
-
-                let message_type_name = field
-                    .fully_qualified_type_name()
-                    .map_err(|err| DecodeError::new(err))?;
-
-                let mut writer = ProtobufMessageWriter {
-                    seen_repeated_fields: Default::default(),
-                    base_column_key: self.base_column_key.extending(ColumnKeyElement::Field {
-                        field_tag: field.number(),
-                    }),
-                    column_information: self.column_information,
-                    descriptors: self.descriptors,
-                    message_descriptor: self
-                        .descriptors
-                        .message_matching(message_type_name)
-                        .ok_or_else(|| {
-                            DecodeError::new(format!(
-                                "message type not found in descriptor: {}",
-                                message_type_name
-                            ))
-                        })?,
-                    output_row_idx: row_idx,
-                    output: &output,
-                };
-
-                check_wire_type(WireType::LengthDelimited, wire_type)?;
-
-                let len = decode_varint(buf)?;
-                let remaining = buf.remaining();
-                if len > remaining as u64 {
-                    return Err(DecodeError::new("buffer underflow"));
-                }
-
-                let limit = remaining - len as usize;
-                while buf.remaining() > limit {
-                    let (tag, wire_type) = decode_key(buf)?;
-                    writer.merge_field(tag, wire_type, buf, Default::default())?;
-                }
-
-                if buf.remaining() != limit {
-                    return Err(DecodeError::new("delimited length exceeded"));
-                }
-            }
-            Type::Enum => {
-                let enum_type_name = field
-                    .fully_qualified_type_name()
-                    .map_err(|err| DecodeError::new(err))?;
-
-                let enum_descriptor =
-                    self.descriptors
-                        .enum_matching(enum_type_name)
-                        .ok_or_else(|| {
-                            DecodeError::new(format!(
-                                "enum type not found in descriptor: {}",
-                                field.type_name()
-                            ))
-                        })?;
-
-                let mut enum_value = <i32>::default();
-                prost::encoding::int32::merge(wire_type, &mut enum_value, buf, ctx)?;
-
-                let vector = FlatVector::from(output_vector);
-
-                match enum_descriptor
-                    .value
-                    .iter()
-                    .find(|value| value.number() == enum_value)
-                {
-                    None => {
-                        vector.insert(row_idx, format!("unknown={}", enum_value).as_str());
-                    }
-                    Some(value) => {
-                        vector.insert(row_idx, value.name());
-                    }
-                };
-            }
-            Type::String => {
-                let mut value = <String>::default();
-                prost::encoding::string::merge(wire_type, &mut value, buf, ctx)?;
-
-                let vector = FlatVector::from(output_vector);
-                vector.insert(row_idx, value.as_str());
-            }
-            Type::Uint32 => generate_match_arm!(prost::encoding::uint32::merge, u32),
-            Type::Uint64 => generate_match_arm!(prost::encoding::uint64::merge, u64),
-            Type::Double => generate_match_arm!(prost::encoding::double::merge, f64),
-            Type::Float => generate_match_arm!(prost::encoding::float::merge, f32),
-            Type::Int64 => generate_match_arm!(prost::encoding::int64::merge, i64),
-            Type::Int32 => generate_match_arm!(prost::encoding::int32::merge, i32),
-            Type::Bool => generate_match_arm!(prost::encoding::bool::merge, bool),
-            field_type => {
-                return Err(DecodeError::new(format!(
-                    "unhandled field type: {}",
-                    field_type.as_str_name()
-                )));
-            }
-        };
-
-        Ok(())
+    fn get_vector(&self, idx: usize) -> duckdb::ffi::duckdb_vector {
+        unsafe { duckdb::ffi::duckdb_struct_vector_get_child(self.0, idx as u64) }
     }
 }
