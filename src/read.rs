@@ -3,8 +3,8 @@ use std::error::Error;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::slice;
-use duckdb::ffi::duckdb_vector_get_column_type;
 
+use duckdb::ffi::duckdb_vector_get_column_type;
 use duckdb::vtab::{DataChunk, LogicalType};
 use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 
@@ -168,6 +168,31 @@ pub fn write_single_column(
     row_idx: usize,
 ) -> Result<(), Box<dyn Error>> {
     match field_descriptor.kind() {
+        Kind::Message(message_descriptor)
+            if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
+        {
+            let message = value.as_message().ok_or("expected message")?;
+            let seconds = message
+                .get_field(
+                    &message_descriptor
+                        .get_field(1)
+                        .ok_or("expected field 1 for google.protobuf.Timestamp")?,
+                )
+                .as_i64()
+                .ok_or("expected i64")?;
+
+            let nanos = message
+                .get_field(
+                    &message_descriptor
+                        .get_field(2)
+                        .ok_or("expected field 2 for google.protobuf.Timestamp")?,
+                )
+                .as_i32()
+                .ok_or("expected i32")?;
+
+            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = seconds * 1000000 + (nanos as i64 / 1000);
+        }
         Kind::Message(..) => {
             let message = value.as_message().ok_or("expected message")?;
 
