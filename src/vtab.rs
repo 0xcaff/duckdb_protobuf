@@ -85,7 +85,7 @@ impl VTab for ProtobufVTab {
 
         for field_descriptor in params.message_descriptor.fields() {
             bind.add_result_column(
-                field_descriptor.json_name().as_ref(),
+                field_descriptor.name().as_ref(),
                 into_logical_type(&field_descriptor)?,
             );
         }
