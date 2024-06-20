@@ -7,9 +7,18 @@ on:
 
 jobs:
   build:
-    name: build ${{ matrix.platform }}
+    name: build ${{ matrix.platform }}-${{ matrix.target }}
     strategy:
       matrix:
+        include:
+            - platform: windows-latest
+              target: x86_64-pc-windows-msvc
+            - platform: macos-latest
+              target: aarch64-apple-darwin
+            - platform: macos-latest
+              target: x86_64-apple-darwin
+            - platform: ubuntu-latest
+              target: x86_64-unknown-linux-gnu
         platform:
           - windows-latest
           - macos-latest
@@ -20,14 +29,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - run: cargo build --jobs 1
+      - run: cargo build --target ${{ matrix.target }} --release
 
       - name: save artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.platform }}
-          path: target/debug/*duckdb_protobuf*
+          name: build-${{ matrix.platform }}-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/*duckdb_protobuf*
 
   release:
     needs: build
@@ -36,7 +45,14 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
 
+      - run: |
+          mkdir release
+          mv build-macos-latest-x86_64-apple-darwin/libduckdb_protobuf.dylib ./release/protobuf.osx_amd64.duckdb_extension
+          mv build-macos-latest-aarch64-apple-darwin/libduckdb_protobuf.dylib ./release/protobuf.osx_arm64.duckdb_extension
+          mv build-ubuntu-latest-x86_64-unknown-linux-gnu/libduckdb_protobuf.so ./release/protobuf.linux_amd64.duckdb_extension
+          mv build-windows-latest-x86_64-pc-windows-msvc/Release/duckdb_protobuf.dll ./release/protobuf.windows_amd64.duckdb_extension
+
       - name: release
         uses: softprops/action-gh-release@v2
         with:
-          files: build-*/*
+          files: release/*
