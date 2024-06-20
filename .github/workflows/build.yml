@@ -49,7 +49,7 @@ jobs:
           mkdir release
           mv build-macos-latest-aarch64-apple-darwin/libduckdb_protobuf.dylib ./release/protobuf.osx_arm64.duckdb_extension
           mv build-ubuntu-latest-x86_64-unknown-linux-gnu/libduckdb_protobuf.so ./release/protobuf.linux_amd64.duckdb_extension
-          mv build-windows-latest-x86_64-pc-windows-msvc/Release/duckdb_protobuf.dll ./release/protobuf.windows_amd64.duckdb_extension
+          mv build-windows-latest-x86_64-pc-windows-msvc/duckdb_protobuf.dll ./release/protobuf.windows_amd64.duckdb_extension
 
       - name: release
         uses: softprops/action-gh-release@v2
