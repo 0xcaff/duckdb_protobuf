@@ -13,8 +13,8 @@ v0.10.1 4a89d97db8
 ```
 
 currently only works with duckdb 0.10.1 due to breaking changes in the C ABI
-in versions following. waiting for the rust bindings to merge support for 1.
-0 to upgrade.
+in versions following. waiting for the rust bindings to merge support for 1.0 to
+upgrade.
 
 start duckdb with `-unsigned` flag to allow loading unsigned libraries
 
@@ -49,7 +49,7 @@ for some workloads which generate discrete data (think scraping a grpc API for
 users, or sampling a click stream) its desirable to store data in its 
 original form without applying a transform step. sometimes in this state, 
 you don't know what questions to ask yet, but you want to try a bunch of cuts 
-over your data to get a better sense of what's going.
+over your data to get a better sense of what's inside.
 
 `duckdb_protobuf` allows for making a new choice along the
 flexibility-performance tradeoff continuum for fast exploration with little 
