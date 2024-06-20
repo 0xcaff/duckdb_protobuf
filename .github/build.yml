@@ -1,0 +1,41 @@
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    strategy:
+      matrix:
+        platform:
+          - windows-latest
+          - macos-latest
+          - ubuntu-latest
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: cargo build
+
+      - name: save artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.platform }}
+          path: target/debug/*duckdb_protobuf*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: build-*/*
