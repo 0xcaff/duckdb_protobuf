@@ -16,6 +16,14 @@ currently only works with duckdb 0.10.1 due to breaking changes in the C ABI
 in versions following. waiting for the rust bindings to merge support for 1.0 to
 upgrade.
 
+build the extension from source using `cargo build --release`. make sure to 
+use release mode as the performance delta between release and debug mode is
+often greater than an order of magnitude.
+
+an attempt was made to provide prebuilt binaries but it seems macOS code-signing
+and the dynamic linker have issues with loading duckdb extensions built in other
+environments. will revisit this in the future.
+
 start duckdb with `-unsigned` flag to allow loading unsigned libraries
 
 ```bash
@@ -28,7 +36,7 @@ or if you're using the jdbc connector, you can do this with the
 next load the extension
 
 ```sql
-LOAD '/Users/martin/projects/duckdb_protobuf/target/debug/libduckdb_protobuf.dylib';
+LOAD '/Users/martin/projects/duckdb_protobuf/target/release/libduckdb_protobuf.dylib';
 ```
 
 now start shredding up your protobufs!
@@ -48,12 +56,13 @@ LIMIT 10;
 for some workloads which generate discrete data (think scraping a grpc API for
 users, or sampling a click stream) its desirable to store data in its 
 original form without applying a transform step. sometimes in this state, 
-you don't know what questions to ask yet, but you want to try a bunch of cuts 
-over your data to get a better sense of what's inside.
+you don't know what questions to ask yet or the schema isn't full known and 
+you want to try a bunch of cuts over your data to get a better sense of what's
+inside.
 
 `duckdb_protobuf` allows for making a new choice along the
 flexibility-performance tradeoff continuum for fast exploration with little 
-import complexity
+import complexity and latency.
 
 ## configuration
 
