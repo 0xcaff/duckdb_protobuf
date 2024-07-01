@@ -4,8 +4,7 @@ use std::ffi::CString;
 use std::marker::PhantomData;
 use std::slice;
 
-use duckdb::ffi::duckdb_vector_get_column_type;
-use duckdb::vtab::{DataChunk, LogicalType};
+use duckdb::vtab::DataChunk;
 use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 
 pub fn write_to_output(
@@ -74,10 +73,6 @@ impl<T> MyFlatVector<T> {
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity) }
-    }
-
-    pub fn logical_type(&self) -> LogicalType {
-        LogicalType::from(unsafe { duckdb_vector_get_column_type(self.ptr) })
     }
 }
 

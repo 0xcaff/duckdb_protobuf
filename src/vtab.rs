@@ -15,7 +15,6 @@ use crate::types::into_logical_type;
 pub struct Parameters {
     pub files: String,
     pub message_descriptor: MessageDescriptor,
-    pub pool: DescriptorPool,
 }
 
 impl Parameters {
@@ -50,7 +49,6 @@ impl Parameters {
         Ok(Self {
             files,
             message_descriptor,
-            pool,
         })
     }
 
