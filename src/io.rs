@@ -3,10 +3,11 @@ use byteorder::{BigEndian, ReadBytesExt};
 use std::error::Error;
 use std::fs::File;
 use std::io;
+use std::io::BufReader;
 
 pub struct RecordsReader {
     files_iterator: glob::Paths,
-    current_file: Option<LengthDelimitedRecordsReader<File>>,
+    current_file: Option<LengthDelimitedRecordsReader<BufReader<File>>>,
 }
 
 impl RecordsReader {
@@ -27,6 +28,7 @@ impl RecordsReader {
 
             let next_file_path = next_file_path?;
             let next_file = File::open(&next_file_path)?;
+            let next_file = BufReader::new(next_file);
 
             self.current_file = Some(LengthDelimitedRecordsReader::new(next_file));
 
