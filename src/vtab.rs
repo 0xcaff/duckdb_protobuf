@@ -8,13 +8,14 @@ use duckdb::vtab::{
 };
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 
-use crate::io::RecordsReader;
+use crate::io::{parse, LengthKind, RecordsReader};
 use crate::read::write_to_output;
 use crate::types::into_logical_type;
 
 pub struct Parameters {
     pub files: String,
     pub message_descriptor: MessageDescriptor,
+    pub length_kind: LengthKind,
 }
 
 impl Parameters {
@@ -27,7 +28,7 @@ impl Parameters {
         let pool = {
             let descriptor = bind
                 .get_named_parameter("descriptors")
-                .ok_or("missing argument descriptor")?
+                .ok_or("missing parameter `descriptor`")?
                 .to_string();
 
             let mut file = File::open(descriptor)?;
@@ -39,16 +40,23 @@ impl Parameters {
 
         let message_name = bind
             .get_named_parameter("message_type")
-            .ok_or("missing argument message_type")?
+            .ok_or("missing parameter `message_type`")?
             .to_string();
 
         let message_descriptor = pool
             .get_message_by_name(&message_name.as_str())
             .ok_or("message type not found in descriptor")?;
 
+        let length_kind = bind
+            .get_named_parameter("delimiter")
+            .ok_or("missing parameter `delimiter`")?;
+        let length_kind = parse::<LengthKind>(&length_kind.to_string())
+            .map_err(|err| format!("when parsing parameter delimiter: {}", err))?;
+
         Ok(Self {
             files,
             message_descriptor,
+            length_kind,
         })
     }
 
@@ -64,6 +72,10 @@ impl Parameters {
             ),
             (
                 "descriptors".to_string(),
+                LogicalType::new(LogicalTypeId::Varchar),
+            ),
+            (
+                "delimiter".to_string(),
                 LogicalType::new(LogicalTypeId::Varchar),
             ),
         ]

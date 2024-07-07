@@ -46,7 +46,8 @@ SELECT *
 FROM protobuf(
     descriptors = './descriptor.pb',
     files = './scrape/data/SceneVersion/**/*.bin',
-    message_type = 'test_server.v1.GetUserSceneVersionResponse'
+    message_type = 'test_server.v1.GetUserSceneVersionResponse',
+    delimiter = 'BigEndianFixed'
 )
 LIMIT 10;
 ```
@@ -79,8 +80,8 @@ import complexity and latency.
 
 ## limitations
 
-* doesn't support a few types (bytes, {s,}fixed{32,64}, sint{32,64}), 
-  contributions welcome!
+* doesn't support a few types (bytes, maps, {s,}fixed{32,64}, sint{32,64}), 
+  contributions and even feedback that these field types are used is welcome!
 * execution is single threaded (limitations of the rust bindings)
 
 i'm releasing this to understand how other folks are using protobuf
