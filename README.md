@@ -54,16 +54,15 @@ LIMIT 10;
 
 ## why
 
-for some workloads which generate discrete data (think scraping a grpc API for
-users, or sampling a click stream) its desirable to store data in its 
-original form without applying a transform step. sometimes in this state, 
-you don't know what questions to ask yet or the schema isn't full known and 
-you want to try a bunch of cuts over your data to get a better sense of what's
-inside.
+sometimes you want to land your row primary data in a format with a well-defined
+structure and pretty good decode performance and poke around without a load
+step. maybe you're scraping an endpoint which returns protobuf responses, you're
+figuring out the schema as you go and iteration speed matters much more than 
+query performance.
 
 `duckdb_protobuf` allows for making a new choice along the
-flexibility-performance tradeoff continuum for fast exploration with little 
-import complexity and latency.
+flexibility-performance tradeoff continuum for fast exploration of protobuf 
+streams with little upfront load complexity or time.
 
 ## configuration
 
@@ -84,8 +83,7 @@ import complexity and latency.
   contributions and even feedback that these field types are used is welcome!
 * execution is single threaded (limitations of the rust bindings)
 
-i'm releasing this to understand how other folks are using protobuf
-sequences and duckdb. as such, i'm open to PRs, issues and other high 
-information feedback.
+i'm releasing this to understand how other folks are using protobuf streams and
+duckdb. i'm open to PRs, issues and other feedback.
 
 [glob]: https://docs.rs/glob/latest/glob/
