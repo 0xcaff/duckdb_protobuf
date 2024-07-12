@@ -13,7 +13,7 @@ use duckdb_loadable_macros::duckdb_entrypoint;
 
 #[duckdb_entrypoint]
 fn protobuf_init(conn: Connection) -> Result<(), Box<dyn Error>> {
-    conn.register_table_function::<ProtobufVTab>("protobuf")?;
+    conn.register_table_function_local_init::<ProtobufVTab>("protobuf")?;
 
     Ok(())
 }

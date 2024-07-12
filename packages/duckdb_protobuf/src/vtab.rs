@@ -6,6 +6,7 @@ use std::ops::{Deref, DerefMut};
 use anyhow::{format_err, Context};
 use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
+    VTabLocalData,
 };
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 
@@ -180,6 +181,23 @@ impl ProtobufVTab {
         }
 
         output.set_len(items);
+
+        Ok(())
+    }
+}
+
+pub struct LocalState {}
+
+impl VTabLocalData for ProtobufVTab {
+    type LocalInitData = Handle<LocalState>;
+
+    fn local_init(
+        _init: &InitInfo,
+        data: *mut Self::LocalInitData,
+    ) -> duckdb::Result<(), Box<dyn Error>> {
+        let data = unsafe { &mut *data };
+
+        data.assign(LocalState {});
 
         Ok(())
     }
