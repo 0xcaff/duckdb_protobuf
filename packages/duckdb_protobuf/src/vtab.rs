@@ -1,16 +1,18 @@
+use anyhow::{format_err, Context};
+use crossbeam::queue::ArrayQueue;
+use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
 
-use anyhow::{format_err, Context};
 use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
     VTabLocalData,
 };
-use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 
-use crate::io::{parse, LengthKind, RecordsReader};
+use crate::io::{parse, LengthDelimitedRecordsReader, LengthKind};
 use crate::read::write_to_output;
 use crate::types::into_logical_type;
 
@@ -87,10 +89,41 @@ impl Parameters {
     }
 }
 
+pub struct GlobalState {
+    queue: ArrayQueue<PathBuf>,
+}
+
+impl GlobalState {
+    pub fn new(params: &Parameters) -> Result<GlobalState, anyhow::Error> {
+        let tasks = {
+            let mut tasks = vec![];
+            let items = glob::glob(params.files.as_str())?;
+            for item in items {
+                let item = item?;
+                tasks.push(item);
+            }
+
+            tasks
+        };
+
+        let queue = {
+            let queue = ArrayQueue::new(tasks.len());
+
+            for item in tasks {
+                queue.push(item).unwrap();
+            }
+
+            queue
+        };
+
+        Ok(GlobalState { queue })
+    }
+}
+
 pub struct ProtobufVTab;
 
 impl VTab for ProtobufVTab {
-    type InitData = Handle<RecordsReader>;
+    type InitData = Handle<GlobalState>;
     type BindData = Handle<Parameters>;
 
     unsafe fn bind(
@@ -144,7 +177,9 @@ impl ProtobufVTab {
         let data = unsafe { &mut *data };
         let bind_data = unsafe { &*init_info.get_bind_data::<<Self as VTab>::BindData>() };
 
-        data.assign(RecordsReader::new(&bind_data)?);
+        let new_global_state = GlobalState::new(bind_data)?;
+        init_info.set_max_threads(new_global_state.queue.len() as _);
+        data.assign(new_global_state);
 
         Ok(())
     }
@@ -152,8 +187,16 @@ impl ProtobufVTab {
     fn func(func: &FunctionInfo, output: &mut DataChunk) -> duckdb::Result<(), anyhow::Error> {
         let bind_data = unsafe { &mut *func.get_bind_data::<<Self as VTab>::BindData>() };
         let init_data = unsafe { &mut *func.get_init_data::<<Self as VTab>::InitData>() };
+        let local_init_data =
+            unsafe { &mut *func.get_local_init_data::<<Self as VTabLocalData>::LocalInitData>() };
 
         let parameters: &Parameters = bind_data.deref();
+
+        let mut state_container = StateContainer {
+            local_state: local_init_data,
+            global_state: init_data,
+            parameters,
+        };
 
         let available_chunk_size = output.flat_vector(0).capacity();
         let mut items = 0;
@@ -161,7 +204,7 @@ impl ProtobufVTab {
         let mut column_information = Default::default();
 
         for output_row_idx in 0..available_chunk_size {
-            let bytes = match init_data.next_message()? {
+            let bytes = match state_container.next_message()? {
                 None => break,
                 Some(bytes) => bytes,
             };
@@ -186,7 +229,43 @@ impl ProtobufVTab {
     }
 }
 
-pub struct LocalState {}
+struct StateContainer<'a> {
+    local_state: &'a mut LocalState,
+    global_state: &'a GlobalState,
+    parameters: &'a Parameters,
+}
+
+impl StateContainer<'_> {
+    fn next_message(&mut self) -> Result<Option<Vec<u8>>, anyhow::Error> {
+        let file_reader = if let Some(reader) = &mut self.local_state.current {
+            reader
+        } else {
+            let Some(next_file_path) = self.global_state.queue.pop() else {
+                return Ok(None);
+            };
+
+            let next_file = File::open(&next_file_path)?;
+            self.local_state.current = Some(LengthDelimitedRecordsReader::create(
+                next_file,
+                self.parameters.length_kind,
+            ));
+
+            self.local_state.current.as_mut().unwrap()
+        };
+
+        let Some(next_message) = file_reader.try_get_next()? else {
+            self.local_state.current = None;
+            return Ok(None);
+        };
+
+        Ok(Some(next_message))
+    }
+}
+
+#[repr(C)]
+pub struct LocalState {
+    current: Option<LengthDelimitedRecordsReader>,
+}
 
 impl VTabLocalData for ProtobufVTab {
     type LocalInitData = Handle<LocalState>;
@@ -197,7 +276,7 @@ impl VTabLocalData for ProtobufVTab {
     ) -> duckdb::Result<(), Box<dyn Error>> {
         let data = unsafe { &mut *data };
 
-        data.assign(LocalState {});
+        data.assign(LocalState { current: None });
 
         Ok(())
     }
