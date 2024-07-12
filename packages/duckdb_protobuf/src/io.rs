@@ -1,55 +1,11 @@
+use ouroboros::self_referencing;
+use protobuf::CodedInputStream;
 use std::error::Error;
 use std::fs::File;
 use std::io;
 
 use byteorder::{BigEndian, ReadBytesExt};
-use ouroboros::self_referencing;
-use protobuf::CodedInputStream;
 use strum::{AsRefStr, EnumIter, EnumString, IntoEnumIterator};
-
-use crate::vtab::Parameters;
-
-pub struct RecordsReader {
-    files_iterator: glob::Paths,
-    length_kind: LengthKind,
-    current_file: Option<LengthDelimitedRecordsReader>,
-}
-
-impl RecordsReader {
-    pub fn new(params: &Parameters) -> Result<RecordsReader, Box<dyn Error>> {
-        Ok(RecordsReader {
-            files_iterator: glob::glob(params.files.as_str())?,
-            length_kind: params.length_kind,
-            current_file: None,
-        })
-    }
-
-    pub fn next_message(&mut self) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-        let file_reader = if let Some(reader) = &mut self.current_file {
-            reader
-        } else {
-            let Some(next_file_path) = self.files_iterator.next() else {
-                return Ok(None);
-            };
-
-            let next_file_path = next_file_path?;
-            let next_file = File::open(&next_file_path)?;
-            self.current_file = Some(LengthDelimitedRecordsReader::create(
-                next_file,
-                self.length_kind,
-            ));
-
-            self.current_file.as_mut().unwrap()
-        };
-
-        let Some(next_message) = file_reader.try_get_next()? else {
-            self.current_file = None;
-            return Ok(None);
-        };
-
-        Ok(Some(next_message))
-    }
-}
 
 #[derive(Copy, Clone, EnumString, EnumIter, AsRefStr)]
 pub enum LengthKind {

@@ -16,3 +16,4 @@ byteorder = "1.5.0"
 log = "0.4.21"
 ouroboros = "0.18.4"
 strum = { version = "0.26.3", features = ["derive"] }
+crossbeam = "0.8.4"
