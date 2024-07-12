@@ -3,9 +3,7 @@ use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 
-use duckdb::vtab::{
-    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
-};
+use duckdb::vtab::{BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab, VTabLocalData};
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 
 use crate::io::{parse, LengthKind, RecordsReader};
@@ -152,6 +150,24 @@ impl VTab for ProtobufVTab {
 
     fn named_parameters() -> Option<Vec<(String, LogicalType)>> {
         Some(Parameters::values())
+    }
+}
+
+pub struct LocalState {
+
+}
+
+impl VTabLocalData for ProtobufVTab {
+    type LocalInitData = Handle<LocalState>;
+
+    fn local_init(_init: &InitInfo, data: *mut Self::LocalInitData) -> duckdb::Result<(), Box<dyn Error>> {
+        let data = unsafe { &mut *data };
+
+        data.assign(LocalState {
+
+        });
+
+        Ok(())
     }
 }
 
