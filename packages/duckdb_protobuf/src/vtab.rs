@@ -103,6 +103,10 @@ impl GlobalState {
             tasks
         };
 
+        if tasks.is_empty() {
+            return Err("no files matched".into());
+        }
+
         let queue = {
             let queue = ArrayQueue::new(tasks.len());
 
