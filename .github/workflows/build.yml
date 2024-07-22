@@ -15,17 +15,14 @@ jobs:
         include:
             # - platform: windows-latest
             #   target: x86_64-pc-windows-msvc
-            #   duckdb_artifact: libduckdb-windows-amd64.zip
             #   duckdb_platform: windows_amd64
             #   library_output: duckdb_protobuf.dll
             - platform: macos-latest
               target: aarch64-apple-darwin
-              duckdb_artifact:  libduckdb-osx-universal.zip
               library_output: libduckdb_protobuf.dylib
               duckdb_platform: osx_arm64
             - platform: ubuntu-latest
               target: x86_64-unknown-linux-gnu
-              duckdb_artifact: libduckdb-linux-amd64.zip
               library_output: libduckdb_protobuf.so
               duckdb_platform: linux_amd64
 
@@ -34,24 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: robinraju/release-downloader@v1.4
-        name: download duckdb
-        with:
-          repository: "duckdb/duckdb"
-          tag: "v1.0.0"
-          fileName: ${{ matrix.duckdb_artifact }}
-          out-file-path: .
-
-      - name: extract duckdb
-        uses: ihiroky/extract-action@v1
-        with:
-          file_path: ${{ github.workspace }}/${{ matrix.duckdb_artifact }}
-          extract_dir: libduckdb
-
       - run: cargo build --target ${{ matrix.target }} --release
-        env:
-          RUSTFLAGS: '-L ${{ github.workspace }}/libduckdb'
-          DUCKDB_INCLUDE_DIR: ${{ github.workspace }}/libduckdb
 
       - name: attach metadata
         run: >
@@ -64,10 +44,6 @@ jobs:
           --extension-version v0.0.1
           --duckdb-version v1.0.0
           --platform ${{ matrix.duckdb_platform }}
-
-        env:
-          RUSTFLAGS: '-L ${{ github.workspace }}/libduckdb'
-          DUCKDB_INCLUDE_DIR: ${{ github.workspace }}/libduckdb
 
       - name: save artifacts
         if: success()
