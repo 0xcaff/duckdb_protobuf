@@ -2,5 +2,6 @@
 resolver = "2"
 
 members = [
+    "packages/duckdb_metadata",
     "packages/duckdb_protobuf"
 ]
