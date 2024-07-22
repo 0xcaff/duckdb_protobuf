@@ -1,0 +1,13 @@
+
+syntax = "proto3";
+
+package user;
+
+import "google/protobuf/timestamp.proto";
+
+message User {
+    string name = 1;
+    int32 id = 2;
+    google.protobuf.Timestamp created_at = 3;
+}
+
