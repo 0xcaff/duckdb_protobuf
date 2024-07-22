@@ -6,6 +6,6 @@ edition = "2021"
 [lib]
 
 [dependencies]
-anyhow = "1.0.86"
 gimli = "0.31.0"
+thiserror = "1.0.63"
 bytemuck = { version = "1.16.1", features = ["derive"] }

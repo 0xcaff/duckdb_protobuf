@@ -1,6 +1,7 @@
 use std::io;
 use bytemuck::{Pod, Zeroable};
 use gimli::leb128;
+use thiserror::Error;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -61,7 +62,8 @@ impl MetadataFields {
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
+#[error("input too long")]
 pub struct InputTooLongError;
 
 pub fn pad_32(bytes: &[u8]) -> Result<[u8; 32], InputTooLongError> {
