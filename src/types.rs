@@ -23,7 +23,7 @@ fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, Box<
 
             let fields = fields
                 .iter()
-                .map(|field| Ok((field.name(), into_logical_type(&field)?)))
+                .map(|field| Ok((field.name(), into_logical_type(field)?)))
                 .collect::<Result<Vec<(&str, LogicalType)>, Box<dyn Error>>>()?;
 
             LogicalType::struct_type(fields.as_slice())

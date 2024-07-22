@@ -33,7 +33,7 @@ impl RecordsReader {
             };
 
             let next_file_path = next_file_path?;
-            let next_file = File::open(&next_file_path)?;
+            let next_file = File::open(next_file_path)?;
             self.current_file = Some(LengthDelimitedRecordsReader::create(
                 next_file,
                 self.length_kind,
@@ -65,7 +65,7 @@ pub fn parse<T: std::str::FromStr<Err = impl Error> + IntoEnumIterator + AsRef<s
             "{}: expected one of: {}, got: {}",
             err,
             LengthKind::iter()
-                .map(|it| format!("{}", it.as_ref()))
+                .map(|it| it.as_ref().to_string())
                 .collect::<Vec<_>>()
                 .join(", "),
             value
@@ -95,7 +95,7 @@ impl LengthDelimitedRecordsReader {
 
     pub fn get_next(&mut self) -> Result<Vec<u8>, io::Error> {
         let length_kind = *self.borrow_length_kind();
-        Ok(self.with_reader_mut(move |reader| {
+        self.with_reader_mut(move |reader| {
             let len = match length_kind {
                 LengthKind::BigEndianFixed => reader.read_u32::<BigEndian>()?,
                 LengthKind::Varint => reader.read_raw_varint32()?,
@@ -105,14 +105,14 @@ impl LengthDelimitedRecordsReader {
             <CodedInputStream as io::Read>::read_exact(reader, &mut buf)?;
 
             Ok::<_, io::Error>(buf)
-        })?)
+        })
     }
 
     pub fn try_get_next(&mut self) -> Result<Option<Vec<u8>>, io::Error> {
         match self.get_next() {
             Ok(it) => Ok(Some(it)),
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(err) => Err(err.into()),
+            Err(err) => Err(err),
         }
     }
 }

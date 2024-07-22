@@ -44,7 +44,7 @@ impl Parameters {
             .to_string();
 
         let message_descriptor = pool
-            .get_message_by_name(&message_name.as_str())
+            .get_message_by_name(message_name.as_str())
             .ok_or("message type not found in descriptor")?;
 
         let length_kind = bind
@@ -88,7 +88,10 @@ impl VTab for ProtobufVTab {
     type InitData = Handle<RecordsReader>;
     type BindData = Handle<Parameters>;
 
-    fn bind(bind: &BindInfo, data: *mut Self::BindData) -> duckdb::Result<(), Box<dyn Error>> {
+    unsafe fn bind(
+        bind: &BindInfo,
+        data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn Error>> {
         let data = unsafe { &mut *data };
 
         let params = Parameters::from_bind_info(bind)?;
@@ -105,16 +108,22 @@ impl VTab for ProtobufVTab {
         Ok(())
     }
 
-    fn init(init_info: &InitInfo, data: *mut Self::InitData) -> duckdb::Result<(), Box<dyn Error>> {
+    unsafe fn init(
+        init_info: &InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn Error>> {
         let data = unsafe { &mut *data };
-        let bind_data = unsafe { &*init_info.get_bind_data::<Self::BindData>() };
+        let bind_data = init_info.get_bind_data::<Self::BindData>();
 
-        data.assign(RecordsReader::new(&bind_data)?);
+        data.assign(RecordsReader::new(&*bind_data)?);
 
         Ok(())
     }
 
-    fn func(func: &FunctionInfo, output: &mut DataChunk) -> duckdb::Result<(), Box<dyn Error>> {
+    unsafe fn func(
+        func: &FunctionInfo,
+        output: &mut DataChunk,
+    ) -> duckdb::Result<(), Box<dyn Error>> {
         let bind_data = unsafe { &mut *func.get_bind_data::<Self::BindData>() };
         let init_data = unsafe { &mut *func.get_init_data::<Self::InitData>() };
 
