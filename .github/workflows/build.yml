@@ -15,44 +15,42 @@ jobs:
         include:
             # - platform: windows-latest
             #   target: x86_64-pc-windows-msvc
-            #   library_artifact: libduckdb-windows-amd64.zip
+            #   duckdb_platform: windows_amd64
+            #   library_output: duckdb_protobuf.dll
             - platform: macos-latest
               target: aarch64-apple-darwin
-              library_artifact:  libduckdb-osx-universal.zip
+              library_output: libduckdb_protobuf.dylib
+              duckdb_platform: osx_arm64
             - platform: ubuntu-latest
               target: x86_64-unknown-linux-gnu
-              library_artifact: libduckdb-linux-amd64.zip
+              library_output: libduckdb_protobuf.so
+              duckdb_platform: linux_amd64
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: robinraju/release-downloader@v1.4
-        name: download duckdb
-        with:
-          repository: "duckdb/duckdb"
-          tag: "v0.10.1"
-          fileName: ${{ matrix.library_artifact }}
-          out-file-path: .
-
-      - name: extract duckdb
-        uses: ihiroky/extract-action@v1
-        with:
-          file_path: ${{ github.workspace }}/${{ matrix.library_artifact }}
-          extract_dir: libduckdb
-
       - run: cargo build --target ${{ matrix.target }} --release
-        env:
-          RUSTFLAGS: '-L ${{ github.workspace }}/libduckdb'
-          DUCKDB_INCLUDE_DIR: ${{ github.workspace }}/libduckdb
+
+      - name: attach metadata
+        run: >
+          cargo run
+          --package duckdb_metadata_bin
+          --bin duckdb_metadata
+          --
+          --input target/${{ matrix.target }}/release/${{ matrix.library_output }}
+          --output target/${{ matrix.target }}/release/protobuf.duckdb_extension
+          --extension-version v0.0.1
+          --duckdb-version v1.0.0
+          --platform ${{ matrix.duckdb_platform }}
 
       - name: save artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.platform }}-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/*duckdb_protobuf*
+          path: target/${{ matrix.target }}/release/protobuf.duckdb_extension
 
   release:
     needs: build
@@ -63,9 +61,8 @@ jobs:
 
       - run: |
           mkdir release
-          mv build-macos-latest-aarch64-apple-darwin/libduckdb_protobuf.dylib ./release/protobuf.osx_arm64.duckdb_extension
-          mv build-ubuntu-latest-x86_64-unknown-linux-gnu/libduckdb_protobuf.so ./release/protobuf.linux_amd64.duckdb_extension
-          mv build-windows-latest-x86_64-pc-windows-msvc/duckdb_protobuf.dll ./release/protobuf.windows_amd64.duckdb_extension
+          mv build-macos-latest-aarch64-apple-darwin/protobuf.duckdb_extension ./release/protobuf.osx_arm64.duckdb_extension
+          mv build-ubuntu-latest-x86_64-unknown-linux-gnu/protobuf.duckdb_extension ./release/protobuf.linux_amd64.duckdb_extension
 
       - name: release
         uses: softprops/action-gh-release@v2

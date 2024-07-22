@@ -1,0 +1,13 @@
+[package]
+name = "duckdb_metadata_bin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "duckdb_metadata"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.9", features = ["derive"] }
+duckdb_metadata = { path = "../duckdb_metadata" }
+anyhow = "1.0.86"

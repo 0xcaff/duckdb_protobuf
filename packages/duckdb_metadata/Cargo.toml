@@ -1,0 +1,11 @@
+[package]
+name = "duckdb_metadata"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+
+[dependencies]
+gimli = "0.31.0"
+thiserror = "1.0.63"
+bytemuck = { version = "1.16.1", features = ["derive"] }
