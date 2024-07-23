@@ -1,3 +1,4 @@
+use anyhow::format_err;
 use byteorder::{BigEndian, ReadBytesExt};
 use ouroboros::self_referencing;
 use protobuf::CodedInputStream;
@@ -15,7 +16,7 @@ pub struct RecordsReader {
 }
 
 impl RecordsReader {
-    pub fn new(params: &Parameters) -> Result<RecordsReader, Box<dyn Error>> {
+    pub fn new(params: &Parameters) -> Result<RecordsReader, anyhow::Error> {
         Ok(RecordsReader {
             files_iterator: glob::glob(params.files.as_str())?,
             length_kind: params.length_kind,
@@ -23,7 +24,7 @@ impl RecordsReader {
         })
     }
 
-    pub fn next_message(&mut self) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    pub fn next_message(&mut self) -> Result<Option<Vec<u8>>, anyhow::Error> {
         let file_reader = if let Some(reader) = &mut self.current_file {
             reader
         } else {
@@ -77,9 +78,9 @@ pub enum LengthKind {
 
 pub fn parse<T: std::str::FromStr<Err = impl Error> + IntoEnumIterator + AsRef<str>>(
     value: &str,
-) -> Result<T, Box<dyn Error>> {
+) -> Result<T, anyhow::Error> {
     Ok(T::from_str(value).map_err(|err| {
-        format!(
+        format_err!(
             "{}: expected one of: {}, got: {}",
             err,
             LengthKind::iter()
