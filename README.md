@@ -16,7 +16,8 @@ if you're on a different version and want builds, open an issue.
 
 download the latest version from
 [releases](https://github.com/0xcaff/duckdb_protobuf/releases). if you're on 
-macOS, blow away the quarantine params with to allow the file to be loaded
+macOS, blow away the quarantine params with the following to allow the file 
+to be loaded
 
 ```sh
 $ xattr -d com.apple.quarantine /Users/martin/Downloads/protobuf.duckdb_extension
@@ -72,8 +73,8 @@ streams with little upfront load complexity or time.
 * `delimiter`: specifies where one message starts and the next one begins
   * `BigEndianFixed`: every message is prefixed with a u32 big endian value 
     specifying its length. files are a sequence of messages
-  * `Varint`: every message is prefixed with a protobuf Varint value (
-    [encoding](https://protobuf.dev/programming-guides/encoding/#varints)). 
+  * `Varint`: every message is prefixed with a protobuf Varint value
+    ([encoding](https://protobuf.dev/programming-guides/encoding/#varints)). 
     files are a sequence of messages
   * `SingleMessagePerFile`: each file contains a single message
 
