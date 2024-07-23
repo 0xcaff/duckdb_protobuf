@@ -563,6 +563,10 @@ checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 
 [[package]]
 name = "duckdb"
+version = "0.1.0"
+
+[[package]]
+name = "duckdb"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "626373a331b49f94b24edc4e53a59b0b354f085ac3b339d43d31da7a9b145004"
@@ -616,7 +620,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "byteorder",
- "duckdb",
+ "duckdb 1.0.0",
  "duckdb-loadable-macros",
  "glob",
  "log",

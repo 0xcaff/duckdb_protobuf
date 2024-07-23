@@ -17,6 +17,12 @@ ifeq ($(DUCKDB_PLATFORM),linux_amd64)
 	LIBRARY_OUTPUT := libduckdb_protobuf.so
 endif
 
+load_vendored:
+	wget https://crates.io/api/v1/crates/duckdb/1.0.0/download -O duckdb.tar.gz
+	mkdir -p packages/duckdb
+	tar --strip-components=1 -xzvf duckdb.tar.gz -C packages/duckdb
+	rm duckdb.tar.gz
+
 debug:
 	cargo build --package duckdb_protobuf
 	cargo run \
@@ -44,4 +50,4 @@ release:
 test: release
 	cargo test
 
-.PHONY: debug release
+.PHONY: debug release test load_vendored
