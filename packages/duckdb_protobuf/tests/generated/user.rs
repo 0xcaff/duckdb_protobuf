@@ -6,6 +6,4 @@ pub struct User {
     pub name: ::prost::alloc::string::String,
     #[prost(int32, tag = "2")]
     pub id: i32,
-    #[prost(message, optional, tag = "3")]
-    pub created_at: ::core::option::Option<::prost_types::Timestamp>,
 }

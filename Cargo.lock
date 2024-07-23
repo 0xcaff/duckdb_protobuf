@@ -624,7 +624,6 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-reflect",
- "prost-types",
  "protobuf",
  "strum 0.26.3",
 ]
