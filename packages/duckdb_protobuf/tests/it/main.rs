@@ -1,11 +1,11 @@
-use anyhow::Result;
-use duckdb::{Config, Connection};
-use prost::Message;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Once;
+
+use anyhow::Result;
+use duckdb::{Config, Connection};
+use prost::Message;
 
 static INIT: Once = Once::new();
 
@@ -13,8 +13,6 @@ fn setup() {
     INIT.call_once(|| {
         compile_protos().expect("Failed to compile protobufs");
         generate_test_data().expect("Failed to generate test data");
-        compile_duckdb_extension().expect("Failed to compile DuckDB extension");
-        attach_metadata().expect("Failed to attach metadata");
     });
 }
 
@@ -73,56 +71,6 @@ fn generate_test_data() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn compile_duckdb_extension() -> Result<()> {
-    Command::new("cargo")
-        .args(["build", "--release"])
-        .status()?;
-
-    Ok(())
-}
-
-fn attach_metadata() -> Result<()> {
-    let target_dir = "../../target/release";
-    let library_output = if cfg!(target_os = "macos") {
-        "libduckdb_protobuf.dylib"
-    } else if cfg!(target_os = "linux") {
-        "libduckdb_protobuf.so"
-    } else {
-        unimplemented!("Unsupported platform");
-    };
-
-    Command::new("cargo")
-        .args([
-            "run",
-            "--package",
-            "duckdb_metadata_bin",
-            "--bin",
-            "duckdb_metadata",
-            "--",
-            "--input",
-            &format!("{}/{}", target_dir, library_output),
-            "--output",
-            &format!("{}/protobuf.duckdb_extension", target_dir),
-            "--extension-version",
-            "v0.0.1",
-            "--duckdb-version",
-            "v1.0.0",
-            "--platform",
-            if cfg!(target_os = "macos") {
-                "osx_arm64"
-            } else if cfg!(target_os = "linux") {
-                "linux_amd64"
-            } else {
-                unimplemented!("Unsupported platform")
-            },
-        ])
-        .status()?;
-
-    println!("Metadata attached successfully.");
-
-    Ok(())
-}
-
 #[test]
 fn test_setup_creates_files() {
     setup();
@@ -149,15 +97,14 @@ fn test_query_protobuf_data() -> Result<()> {
 
     let mut stmt = conn.prepare(
         "
-    SELECT *
-    FROM protobuf(
-    descriptors = './tests/generated/descriptor.pb',
-    files = './tests/generated/data/**/*.bin',
-    message_type = 'user.User',
-    delimiter = 'SingleMessagePerFile'
-    )
-    LIMIT 10;
-    ",
+            SELECT * FROM protobuf(
+                descriptors = './tests/generated/descriptor.pb',
+                files = './tests/generated/data/**/*.bin',
+                message_type = 'user.User',
+                delimiter = 'SingleMessagePerFile'
+            )
+            LIMIT 10;
+        ",
     )?;
 
     let mut rows = stmt.query([])?;
