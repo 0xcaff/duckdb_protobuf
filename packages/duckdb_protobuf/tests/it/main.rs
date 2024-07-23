@@ -20,8 +20,10 @@ fn setup() {
 
 fn compile_protos() -> Result<(), Box<dyn std::error::Error>> {
     let proto_path = "tests/protos/user.proto";
-    let out_dir = "tests/generated";
+    let descriptor_dir = "tests/generated";
+    let out_dir = "tests/src";
 
+    std::fs::create_dir_all(descriptor_dir)?;
     std::fs::create_dir_all(out_dir)?;
 
     prost_build::Config::new()
@@ -35,10 +37,7 @@ fn compile_protos() -> Result<(), Box<dyn std::error::Error>> {
 fn generate_test_data() -> Result<(), Box<dyn std::error::Error>> {
     // Include the generated Rust code for the protobuf messages
     mod user {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/generated/user.rs"
-        ));
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/src/user.rs"));
     }
 
     // Create some example User messages
@@ -148,23 +147,6 @@ fn test_query_protobuf_data() -> Result<()> {
     conn.execute("LOAD '../../target/release/protobuf.duckdb_extension'", [])?;
     println!("DuckDB extension loaded successfully.");
 
-    // FIXME: Error: Query returned no rows
-    //     let al = conn.query_row(
-    //         "
-    // SELECT *
-    // FROM protobuf(
-    //     descriptors = './tests/generated/descriptor.pb',
-    //     files = './tests/generated/data/**/*.bin',
-    //     message_type = 'user.User',
-    //     delimiter = 'BigEndianFixed')
-    // LIMIT 10;",
-    //         [],
-    //         |row| <(String,)>::try_from(row),
-    //     )?;
-    //
-    //     println!("Query result: {:?}", val);
-
-    // FIXME: not results yet too. 🥺
     let mut stmt = conn.prepare(
         "
     SELECT *
@@ -172,7 +154,7 @@ fn test_query_protobuf_data() -> Result<()> {
     descriptors = './tests/generated/descriptor.pb',
     files = './tests/generated/data/**/*.bin',
     message_type = 'user.User',
-    delimiter = 'BigEndianFixed'
+    delimiter = 'SingleMessagePerFile'
     )
     LIMIT 10;
     ",
@@ -180,13 +162,16 @@ fn test_query_protobuf_data() -> Result<()> {
 
     let mut rows = stmt.query([])?;
 
-    println!("Query result:");
+    let mut results = Vec::new();
     while let Some(row) = rows.next()? {
         let name: String = row.get(0)?;
         let id: i32 = row.get(1)?;
-        println!("name: {}, id: {}", name, id);
+        results.push((name, id));
     }
-    println!("Query completed.");
+    println!("Query result: {results:?}");
 
+    assert_eq!(results.len(), 3, "Expected 3 rows");
+    assert_eq!(results[0].0, "Alice", "Expected first name to be 'Alice'");
+    assert_eq!(results[0].1, 1, "Expected first id to be 1");
     Ok(())
 }
