@@ -13,10 +13,10 @@ jobs:
     strategy:
       matrix:
         include:
-            # - platform: windows-latest
-            #   target: x86_64-pc-windows-msvc
-            #   duckdb_platform: windows_amd64
-            #   library_output: duckdb_protobuf.dll
+            - platform: windows-latest
+              target: x86_64-pc-windows-msvc
+              duckdb_platform: windows_amd64
+              library_output: duckdb_protobuf.dll
             - platform: macos-latest
               target: aarch64-apple-darwin
               library_output: libduckdb_protobuf.dylib
