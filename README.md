@@ -69,6 +69,13 @@ streams with little upfront load complexity or time.
 * `files`: glob pattern for the files to read. Uses the [`glob`][glob] crate 
   for evaluating globs.
 * `message_type`: the fully qualified message type to parse.
+* `delimiter`: specifies where one message starts and the next one begins
+  * `BigEndianFixed`: every message is prefixed with a u32 big endian value 
+    specifying its length. files are a sequence of messages
+  * `Varint`: every message is prefixed with a protobuf Varint value (
+    [encoding](https://protobuf.dev/programming-guides/encoding/#varints)). 
+    files are a sequence of messages
+  * `SingleMessagePerFile`: each file contains a single message
 
 ## features
 
