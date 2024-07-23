@@ -108,7 +108,7 @@ pub struct LengthDelimitedRecordsReader {
 }
 
 impl LengthDelimitedRecordsReader {
-    pub fn create(inner: File, length_kind: DelimitedLengthKind) -> Self {
+    fn create(inner: File, length_kind: DelimitedLengthKind) -> Self {
         LengthDelimitedRecordsReaderBuilder {
             length_kind,
             inner,
@@ -117,7 +117,7 @@ impl LengthDelimitedRecordsReader {
         .build()
     }
 
-    pub fn get_next(&mut self) -> Result<Vec<u8>, io::Error> {
+    fn get_next(&mut self) -> Result<Vec<u8>, io::Error> {
         let length_kind = *self.borrow_length_kind();
         Ok(self.with_reader_mut(move |reader| {
             let len = match length_kind {
@@ -132,7 +132,7 @@ impl LengthDelimitedRecordsReader {
         })?)
     }
 
-    pub fn try_get_next(&mut self) -> Result<Option<Vec<u8>>, io::Error> {
+    fn try_get_next(&mut self) -> Result<Option<Vec<u8>>, io::Error> {
         match self.get_next() {
             Ok(it) => Ok(Some(it)),
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
