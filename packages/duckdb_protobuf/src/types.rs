@@ -1,15 +1,15 @@
+use anyhow::format_err;
 use duckdb::vtab::{LogicalType, LogicalTypeId};
 use prost_reflect::{Cardinality, FieldDescriptor, Kind};
-use std::error::Error;
 
-pub fn into_logical_type(field: &FieldDescriptor) -> Result<LogicalType, Box<dyn Error>> {
+pub fn into_logical_type(field: &FieldDescriptor) -> Result<LogicalType, anyhow::Error> {
     Ok(match field.cardinality() {
         Cardinality::Optional | Cardinality::Required => into_logical_type_single(field)?,
         Cardinality::Repeated => LogicalType::list(&into_logical_type_single(field)?),
     })
 }
 
-fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, Box<dyn Error>> {
+fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, anyhow::Error> {
     let value = match field.kind() {
         Kind::Message(message_descriptor)
             if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
@@ -24,7 +24,7 @@ fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, Box<
             let fields = fields
                 .iter()
                 .map(|field| Ok((field.name(), into_logical_type(&field)?)))
-                .collect::<Result<Vec<(&str, LogicalType)>, Box<dyn Error>>>()?;
+                .collect::<Result<Vec<(&str, LogicalType)>, anyhow::Error>>()?;
 
             LogicalType::struct_type(fields.as_slice())
         }
@@ -38,7 +38,7 @@ fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, Box<
         Kind::Bool => LogicalType::new(LogicalTypeId::Boolean),
         Kind::String => LogicalType::new(LogicalTypeId::Varchar),
         logical_type => {
-            return Err(format!(
+            return Err(format_err!(
                 "unhandled field: {}, type: {:?}",
                 field.name(),
                 logical_type,

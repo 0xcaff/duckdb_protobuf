@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 
+use anyhow::{format_err, Context};
 use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
 };
@@ -19,39 +20,42 @@ pub struct Parameters {
 }
 
 impl Parameters {
-    pub fn from_bind_info(bind: &BindInfo) -> Result<Self, Box<dyn Error>> {
+    pub fn from_bind_info(bind: &BindInfo) -> Result<Self, anyhow::Error> {
         let files = bind
             .get_named_parameter("files")
-            .ok_or("missing argument files")?
+            .ok_or_else(|| format_err!("missing argument `files`"))?
             .to_string();
 
         let pool = {
             let descriptor = bind
                 .get_named_parameter("descriptors")
-                .ok_or("missing parameter `descriptor`")?
+                .ok_or_else(|| format_err!("missing parameter `descriptor`"))?
                 .to_string();
 
-            let mut file = File::open(descriptor)?;
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer)?;
+            (|| -> Result<DescriptorPool, anyhow::Error> {
+                let mut file = File::open(descriptor)?;
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer)?;
 
-            DescriptorPool::decode(buffer.as_slice())?
+                Ok(DescriptorPool::decode(buffer.as_slice())?)
+            })()
+            .with_context(|| format_err!("field `descriptors`"))?
         };
 
         let message_name = bind
             .get_named_parameter("message_type")
-            .ok_or("missing parameter `message_type`")?
+            .ok_or_else(|| format_err!("missing parameter `message_type`"))?
             .to_string();
 
         let message_descriptor = pool
             .get_message_by_name(&message_name.as_str())
-            .ok_or("message type not found in descriptor")?;
+            .ok_or_else(|| format_err!("message type not found in `descriptor`"))?;
 
         let length_kind = bind
             .get_named_parameter("delimiter")
-            .ok_or("missing parameter `delimiter`")?;
+            .ok_or_else(|| format_err!("missing parameter `delimiter`"))?;
         let length_kind = parse::<LengthKind>(&length_kind.to_string())
-            .map_err(|err| format!("when parsing parameter delimiter: {}", err))?;
+            .map_err(|err| format_err!("when parsing parameter delimiter: {}", err))?;
 
         Ok(Self {
             files,
@@ -88,7 +92,34 @@ impl VTab for ProtobufVTab {
     type InitData = Handle<RecordsReader>;
     type BindData = Handle<Parameters>;
 
-    unsafe fn bind(bind: &BindInfo, data: *mut Self::BindData) -> duckdb::Result<(), Box<dyn Error>> {
+    unsafe fn bind(
+        bind: &BindInfo,
+        data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn Error>> {
+        Ok(Self::bind(bind, data).map_err(format_error_with_causes)?)
+    }
+
+    unsafe fn init(
+        init_info: &InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn Error>> {
+        Ok(Self::init(init_info, data).map_err(format_error_with_causes)?)
+    }
+
+    unsafe fn func(
+        func: &FunctionInfo,
+        output: &mut DataChunk,
+    ) -> duckdb::Result<(), Box<dyn Error>> {
+        Ok(Self::func(func, output).map_err(format_error_with_causes)?)
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalType)>> {
+        Some(Parameters::values())
+    }
+}
+
+impl ProtobufVTab {
+    fn bind(bind: &BindInfo, data: *mut <Self as VTab>::BindData) -> Result<(), anyhow::Error> {
         let data = unsafe { &mut *data };
 
         let params = Parameters::from_bind_info(bind)?;
@@ -105,18 +136,21 @@ impl VTab for ProtobufVTab {
         Ok(())
     }
 
-    unsafe fn init(init_info: &InitInfo, data: *mut Self::InitData) -> duckdb::Result<(), Box<dyn Error>> {
+    fn init(
+        init_info: &InitInfo,
+        data: *mut <Self as VTab>::InitData,
+    ) -> Result<(), anyhow::Error> {
         let data = unsafe { &mut *data };
-        let bind_data = unsafe { &*init_info.get_bind_data::<Self::BindData>() };
+        let bind_data = unsafe { &*init_info.get_bind_data::<<Self as VTab>::BindData>() };
 
         data.assign(RecordsReader::new(&bind_data)?);
 
         Ok(())
     }
 
-    unsafe fn func(func: &FunctionInfo, output: &mut DataChunk) -> duckdb::Result<(), Box<dyn Error>> {
-        let bind_data = unsafe { &mut *func.get_bind_data::<Self::BindData>() };
-        let init_data = unsafe { &mut *func.get_init_data::<Self::InitData>() };
+    fn func(func: &FunctionInfo, output: &mut DataChunk) -> duckdb::Result<(), anyhow::Error> {
+        let bind_data = unsafe { &mut *func.get_bind_data::<<Self as VTab>::BindData>() };
+        let init_data = unsafe { &mut *func.get_init_data::<<Self as VTab>::InitData>() };
 
         let parameters: &Parameters = bind_data.deref();
 
@@ -148,10 +182,6 @@ impl VTab for ProtobufVTab {
         output.set_len(items);
 
         Ok(())
-    }
-
-    fn named_parameters() -> Option<Vec<(String, LogicalType)>> {
-        Some(Parameters::values())
     }
 }
 
@@ -194,4 +224,15 @@ impl<T> Free for Handle<T> {
             drop(Box::from_raw(self.inner));
         }
     }
+}
+
+fn format_error_with_causes(error: anyhow::Error) -> anyhow::Error {
+    format_err!(
+        "{}",
+        error
+            .chain()
+            .map(|cause| cause.to_string())
+            .collect::<Vec<_>>()
+            .join(": ")
+    )
 }

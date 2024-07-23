@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::slice;
 
+use anyhow::{bail, format_err};
 use duckdb::vtab::DataChunk;
 use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 
@@ -13,7 +13,7 @@ pub fn write_to_output(
     output: &DataChunk,
     max_rows: usize,
     row_idx: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), anyhow::Error> {
     write_message(
         columns_state,
         &ColumnKey::empty(),
@@ -31,7 +31,7 @@ pub fn write_message(
     output: &impl VectorAccessor,
     max_rows: usize,
     row_idx: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), anyhow::Error> {
     for (field_idx, field_descriptor) in value.descriptor().fields().enumerate() {
         let column_vector = output.get_vector(field_idx);
         let value = value.get_field(&field_descriptor);
@@ -84,7 +84,7 @@ pub fn write_column(
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), anyhow::Error> {
     match field_descriptor.cardinality() {
         Cardinality::Repeated => {
             let column_key = column_key.extending(ColumnKeyElement::List);
@@ -94,7 +94,9 @@ pub fn write_column(
             };
             let list_entry = &mut list_entries_vector.as_mut_slice()[row_idx];
 
-            let values = value.as_list().ok_or("expected list")?;
+            let values = value
+                .as_list()
+                .ok_or_else(|| format_err!("expected list"))?;
 
             let next_offset_ref = columns_state.get_mut(&column_key);
             let next_offset = if let Some(it) = &next_offset_ref {
@@ -161,35 +163,37 @@ pub fn write_single_column(
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), anyhow::Error> {
     match field_descriptor.kind() {
         Kind::Message(message_descriptor)
             if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
         {
-            let message = value.as_message().ok_or("expected message")?;
-            let seconds = message
-                .get_field(
-                    &message_descriptor
-                        .get_field(1)
-                        .ok_or("expected field 1 for google.protobuf.Timestamp")?,
-                )
-                .as_i64()
-                .ok_or("expected i64")?;
+            let message = value
+                .as_message()
+                .ok_or_else(|| format_err!("expected message"))?;
+            let seconds =
+                message
+                    .get_field(&message_descriptor.get_field(1).ok_or_else(|| {
+                        format_err!("expected field 1 for google.protobuf.Timestamp")
+                    })?)
+                    .as_i64()
+                    .ok_or_else(|| format_err!("expected i64"))?;
 
-            let nanos = message
-                .get_field(
-                    &message_descriptor
-                        .get_field(2)
-                        .ok_or("expected field 2 for google.protobuf.Timestamp")?,
-                )
-                .as_i32()
-                .ok_or("expected i32")?;
+            let nanos =
+                message
+                    .get_field(&message_descriptor.get_field(2).ok_or_else(|| {
+                        format_err!("expected field 2 for google.protobuf.Timestamp")
+                    })?)
+                    .as_i32()
+                    .ok_or_else(|| format_err!("expected i32"))?;
 
             let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = seconds * 1000000 + (nanos as i64 / 1000);
         }
         Kind::Message(..) => {
-            let message = value.as_message().ok_or("expected message")?;
+            let message = value
+                .as_message()
+                .ok_or_else(|| format_err!("expected message"))?;
 
             let source = unsafe { StructVector::new(column) };
 
@@ -203,7 +207,9 @@ pub fn write_single_column(
             )?;
         }
         Kind::Enum(enum_descriptor) => {
-            let enum_value = value.as_enum_number().ok_or("expected enum value")?;
+            let enum_value = value
+                .as_enum_number()
+                .ok_or_else(|| format_err!("expected enum value"))?;
 
             let enum_value_descriptor = enum_descriptor
                 .get_value(enum_value)
@@ -219,7 +225,9 @@ pub fn write_single_column(
             };
         }
         Kind::String => {
-            let value = value.as_str().ok_or("expected string")?;
+            let value = value
+                .as_str()
+                .ok_or_else(|| format_err!("expected string"))?;
             let value = CString::new(value)?;
 
             unsafe {
@@ -231,42 +239,56 @@ pub fn write_single_column(
             };
         }
         Kind::Double => {
-            let value = value.as_f64().ok_or("expected double")?;
+            let value = value
+                .as_f64()
+                .ok_or_else(|| format_err!("expected double"))?;
             let mut vector = unsafe { MyFlatVector::<f64>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = value;
         }
         Kind::Float => {
-            let value = value.as_f32().ok_or("expected float")?;
+            let value = value
+                .as_f32()
+                .ok_or_else(|| format_err!("expected float"))?;
             let mut vector = unsafe { MyFlatVector::<f32>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = value;
         }
         Kind::Int32 => {
-            let value = value.as_i32().ok_or("expected int32")?;
+            let value = value
+                .as_i32()
+                .ok_or_else(|| format_err!("expected int32"))?;
             let mut vector = unsafe { MyFlatVector::<i32>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = value;
         }
         Kind::Int64 => {
-            let value = value.as_i64().ok_or("expected int64")?;
+            let value = value
+                .as_i64()
+                .ok_or_else(|| format_err!("expected int64"))?;
             let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = value;
         }
         Kind::Uint32 => {
-            let value = value.as_u32().ok_or("expected uint32")?;
+            let value = value
+                .as_u32()
+                .ok_or_else(|| format_err!("expected uint32"))?;
             let mut vector = unsafe { MyFlatVector::<u32>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = value;
         }
         Kind::Uint64 => {
-            let value = value.as_u64().ok_or("expected uint64")?;
+            let value = value
+                .as_u64()
+                .ok_or_else(|| format_err!("expected uint64"))?;
             let mut vector = unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = value;
         }
         Kind::Bool => {
-            let value = value.as_bool().ok_or("expected bool")?;
+            let value = value
+                .as_bool()
+                .ok_or_else(|| format_err!("expected bool"))?;
             let mut vector = unsafe { MyFlatVector::<bool>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = value;
         }
         _ => {
-            return Err("unhandled field type".into());
+            bail!("unhandled field type");
         }
     };
 
