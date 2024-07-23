@@ -37,8 +37,11 @@ release:
 		-- \
 		--input target/debug/$(LIBRARY_OUTPUT) \
 		--output target/release/protobuf.duckdb_extension \
-		--extension-version $(DUCKDB_EXTENSION_VERSION) \
+		--extension-version $(DUCDKB_EXTENSION_VERSION) \
 		--duckdb-version $(DUCKDB_VERSION) \
 		--platform $(DUCKDB_PLATFORM)
+
+test: release
+	cargo test
 
 .PHONY: debug release

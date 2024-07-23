@@ -22,3 +22,7 @@ anyhow = "1.0"
 prost = "0.13.1"
 prost-build = "0.13.1"
 
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+

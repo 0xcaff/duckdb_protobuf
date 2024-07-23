@@ -5,6 +5,7 @@
       <sourceFolder url="file://$MODULE_DIR$/packages/duckdb_metadata/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/packages/duckdb_metadata_bin/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/packages/duckdb_protobuf/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/duckdb_protobuf/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
