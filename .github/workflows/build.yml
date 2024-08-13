@@ -24,7 +24,7 @@ jobs:
             - platform: ubuntu-latest
               target: x86_64-unknown-linux-gnu
               library_output: libduckdb_protobuf.so
-              duckdb_platform: linux_amd64
+              duckdb_platform: linux_amd64_gcc4
 
     runs-on: ${{ matrix.platform }}
 
@@ -62,7 +62,7 @@ jobs:
       - run: |
           mkdir release
           mv build-macos-latest-aarch64-apple-darwin/protobuf.duckdb_extension ./release/protobuf.osx_arm64.duckdb_extension
-          mv build-ubuntu-latest-x86_64-unknown-linux-gnu/protobuf.duckdb_extension ./release/protobuf.linux_amd64.duckdb_extension
+          mv build-ubuntu-latest-x86_64-unknown-linux-gnu/protobuf.duckdb_extension ./release/protobuf.linux_amd64_gcc4.duckdb_extension
           mv build-windows-latest-x86_64-pc-windows-msvc/protobuf.duckdb_extension ./release/protobuf.windows_amd64.duckdb_extension
 
       - name: release
