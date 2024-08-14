@@ -7,23 +7,12 @@ the standard varint delimited format or a u32 big endian delimited format.
 
 ensure you're using duckdb 1.0.0
 
-```
+```bash
 $ duckdb -version
 v1.0.0 1f98600c2c
 ```
 
-if you're on a different version and want builds, open an issue.
-
-download the latest version from
-[releases](https://github.com/0xcaff/duckdb_protobuf/releases). if you're on 
-macOS, blow away the quarantine params with the following to allow the file 
-to be loaded
-
-```sh
-$ xattr -d com.apple.quarantine /Users/martin/Downloads/protobuf.duckdb_extension
-```
-
-start duckdb with `-unsigned` flag to allow loading unsigned libraries
+start duckdb with `-unsigned` flag to allow loading unsigned libraries.
 
 ```bash
 $ duckdb -unsigned
@@ -32,13 +21,20 @@ $ duckdb -unsigned
 or if you're using the jdbc connector, you can do this with the
 `allow_unsigned_extensions` jdbc connection property.
 
-next load the extension
+now install the extension:
 
-```sql
-LOAD '/Users/martin/Downloads/protobuf.duckdb_extension';
+```
+INSTALL protobuf from 'https://duckdb.0xcaff.xyz';
 ```
 
-now start shredding up your protobufs!
+next load it (you'll need to do this once for every session you want to use 
+the extension)
+
+```
+LOAD protobuf;
+```
+
+and start shredding up your protobufs!
 
 ```sql
 SELECT *
@@ -50,6 +46,28 @@ FROM protobuf(
 )
 LIMIT 10;
 ```
+
+if you want builds for a platform or version which currently doesn't have
+builds, please open an issue.
+
+<details>
+  <summary>install from file</summary>
+
+download the latest version from
+[releases](https://github.com/0xcaff/duckdb_protobuf/releases). if you're on
+macOS, blow away the quarantine params with the following to allow the file
+to be loaded
+
+```sh
+$ xattr -d com.apple.quarantine /Users/martin/Downloads/protobuf.duckdb_extension
+```
+
+next load the extension
+
+```sql
+LOAD '/Users/martin/Downloads/protobuf.duckdb_extension';
+```
+</details>
 
 ## why
 
