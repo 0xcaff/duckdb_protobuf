@@ -23,14 +23,14 @@ or if you're using the jdbc connector, you can do this with the
 
 now install the extension:
 
-```
+```sql
 INSTALL protobuf from 'https://duckdb.0xcaff.xyz';
 ```
 
 next load it (you'll need to do this once for every session you want to use 
 the extension)
 
-```
+```sql
 LOAD protobuf;
 ```
 
