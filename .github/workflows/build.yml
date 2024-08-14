@@ -59,13 +59,6 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          aws-region: auto
-
       - run: |
           mkdir release
           mv build-macos-latest-aarch64-apple-darwin/protobuf.duckdb_extension ./release/protobuf.osx_arm64.duckdb_extension
@@ -73,6 +66,10 @@ jobs:
           mv build-windows-latest-x86_64-pc-windows-msvc/protobuf.duckdb_extension ./release/protobuf.windows_amd64.duckdb_extension
 
       - name: upload files to r2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
         run: |
           aws s3 cp \
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
