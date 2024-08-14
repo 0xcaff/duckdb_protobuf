@@ -59,11 +59,35 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws-region: auto
+
       - run: |
           mkdir release
           mv build-macos-latest-aarch64-apple-darwin/protobuf.duckdb_extension ./release/protobuf.osx_arm64.duckdb_extension
           mv build-ubuntu-latest-x86_64-unknown-linux-gnu/protobuf.duckdb_extension ./release/protobuf.linux_amd64_gcc4.duckdb_extension
           mv build-windows-latest-x86_64-pc-windows-msvc/protobuf.duckdb_extension ./release/protobuf.windows_amd64.duckdb_extension
+
+      - name: upload files to r2
+        run: |
+          aws s3 cp \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            ./release/protobuf.osx_arm64.duckdb_extension
+            s3://duckdb-extensions/v1.0.0/osx_arm64/protobuf.duckdb_extension
+
+          aws s3 cp \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            ./release/protobuf.linux_amd64_gcc4.duckdb_extension
+            s3://duckdb-extensions/v1.0.0/linux_amd64_gcc4/protobuf.duckdb_extension
+
+          aws s3 cp \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            ./release/protobuf.windows_amd64.duckdb_extension
+            s3://duckdb-extensions/v1.0.0/windows_amd64/protobuf.duckdb_extension
 
       - name: release
         uses: softprops/action-gh-release@v2
