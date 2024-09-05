@@ -49,7 +49,7 @@ release:
 		--package duckdb_metadata_bin \
 		--bin duckdb_metadata \
 		-- \
-		--input target/debug/$(LIBRARY_OUTPUT) \
+		--input target/release/$(LIBRARY_OUTPUT) \
 		--output target/release/protobuf.duckdb_extension \
 		--extension-version $(DUCKDB_EXTENSION_VERSION) \
 		--duckdb-version $(DUCKDB_VERSION) \
@@ -58,7 +58,7 @@ release:
 test: release
 	cargo test --package duckdb_protobuf
 
-run: debug
+run: release
 	duckdb \
 		-unsigned \
 		-cmd "LOAD 'target/release/protobuf.duckdb_extension'"
