@@ -1,5 +1,9 @@
 use anyhow::{format_err, Context};
 use crossbeam::queue::ArrayQueue;
+use duckdb::vtab::{
+    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
+    VTabLocalData,
+};
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 use std::error::Error;
 use std::fs::File;
@@ -7,18 +11,15 @@ use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use duckdb::vtab::{
-    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
-    VTabLocalData,
-};
-
 use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind};
 use crate::read::write_to_output;
 use crate::types::into_logical_type;
 
 pub struct Parameters {
     pub files: String,
-    pub message_descriptor: MessageDescriptor,
+    pub descriptor_bytes: Vec<u8>,
+    pub message_name: String,
+    pub shared_message_descriptor: MessageDescriptor,
     pub length_kind: LengthKind,
 }
 
@@ -29,42 +30,56 @@ impl Parameters {
             .ok_or_else(|| format_err!("missing argument `files`"))?
             .to_string();
 
-        let pool = {
-            let descriptor = bind
-                .get_named_parameter("descriptors")
-                .ok_or_else(|| format_err!("missing parameter `descriptor`"))?
-                .to_string();
+        let descriptor = bind
+            .get_named_parameter("descriptors")
+            .ok_or_else(|| format_err!("missing parameter `descriptor`"))?
+            .to_string();
 
-            (|| -> Result<DescriptorPool, anyhow::Error> {
-                let mut file = File::open(descriptor)?;
-                let mut buffer = Vec::new();
-                file.read_to_end(&mut buffer)?;
+        let descriptor_bytes = (|| -> Result<Vec<u8>, anyhow::Error> {
+            let mut file = File::open(descriptor)?;
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer)?;
 
-                Ok(DescriptorPool::decode(buffer.as_slice())?)
-            })()
-            .with_context(|| format_err!("field `descriptors`"))?
-        };
+            Ok(buffer)
+        })()
+        .with_context(|| format_err!("field `descriptors`"))?;
+
+        let shared_descriptor_pool = DescriptorPool::decode(descriptor_bytes.as_slice())?;
 
         let message_name = bind
             .get_named_parameter("message_type")
             .ok_or_else(|| format_err!("missing parameter `message_type`"))?
             .to_string();
 
-        let message_descriptor = pool
+        let message_descriptor = shared_descriptor_pool
             .get_message_by_name(&message_name.as_str())
             .ok_or_else(|| format_err!("message type not found in `descriptor`"))?;
 
         let length_kind = bind
             .get_named_parameter("delimiter")
             .ok_or_else(|| format_err!("missing parameter `delimiter`"))?;
+
         let length_kind = parse::<LengthKind>(&length_kind.to_string())
             .map_err(|err| format_err!("when parsing parameter delimiter: {}", err))?;
 
         Ok(Self {
             files,
-            message_descriptor,
+            descriptor_bytes,
+            message_name,
+            shared_message_descriptor: message_descriptor,
             length_kind,
         })
+    }
+
+    pub fn message_descriptor(&self) -> Result<MessageDescriptor, anyhow::Error> {
+        let descriptor_pool =
+            DescriptorPool::decode(self.descriptor_bytes.as_slice())?;
+
+        let message_descriptor = descriptor_pool
+            .get_message_by_name(&self.message_name)
+            .unwrap();
+
+        Ok(message_descriptor)
     }
 
     pub fn values() -> Vec<(String, LogicalType)> {
@@ -158,7 +173,7 @@ impl ProtobufVTab {
 
         let params = Parameters::from_bind_info(bind)?;
 
-        for field_descriptor in params.message_descriptor.fields() {
+        for field_descriptor in params.shared_message_descriptor.fields() {
             bind.add_result_column(
                 field_descriptor.name().as_ref(),
                 into_logical_type(&field_descriptor)?,
@@ -192,6 +207,8 @@ impl ProtobufVTab {
 
         let parameters: &Parameters = bind_data.deref();
 
+        let local_descriptor = local_init_data.local_descriptor.clone();
+
         let mut state_container = StateContainer {
             local_state: local_init_data,
             global_state: init_data,
@@ -210,7 +227,7 @@ impl ProtobufVTab {
             };
 
             let message =
-                DynamicMessage::decode(parameters.message_descriptor.clone(), bytes.as_slice())?;
+                DynamicMessage::decode(local_descriptor.clone(), bytes.as_slice())?;
 
             write_to_output(
                 &mut column_information,
@@ -282,18 +299,25 @@ impl StateContainer<'_> {
 #[repr(C)]
 pub struct LocalState {
     current: Option<LengthDelimitedRecordsReader>,
+    local_descriptor: MessageDescriptor,
 }
 
 impl VTabLocalData for ProtobufVTab {
     type LocalInitData = Handle<LocalState>;
 
     fn local_init(
-        _init: &InitInfo,
+        init_info: &InitInfo,
         data: *mut Self::LocalInitData,
     ) -> duckdb::Result<(), Box<dyn Error>> {
+        let bind_data = unsafe { &*init_info.get_bind_data::<<Self as VTab>::BindData>() };
+        let local_descriptor = bind_data.message_descriptor()?;
+
         let data = unsafe { &mut *data };
 
-        data.assign(LocalState { current: None });
+        data.assign(LocalState {
+            current: None,
+            local_descriptor: local_descriptor,
+        });
 
         Ok(())
     }
