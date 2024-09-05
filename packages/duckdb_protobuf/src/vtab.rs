@@ -12,7 +12,7 @@ use duckdb::vtab::{
     VTabLocalData,
 };
 
-use crate::io::{parse, LengthDelimitedRecordsReader, LengthKind};
+use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind};
 use crate::read::write_to_output;
 use crate::types::into_logical_type;
 
@@ -244,13 +244,30 @@ impl StateContainer<'_> {
                 return Ok(None);
             };
 
-            let next_file = File::open(&next_file_path)?;
-            self.local_state.current = Some(LengthDelimitedRecordsReader::create(
-                next_file,
-                self.parameters.length_kind,
-            ));
+            let mut next_file = File::open(&next_file_path)?;
+            match self.parameters.length_kind {
+                LengthKind::BigEndianFixed => {
+                    self.local_state.current = Some(LengthDelimitedRecordsReader::create(
+                        next_file,
+                        DelimitedLengthKind::BigEndianFixed,
+                    ));
 
-            self.local_state.current.as_mut().unwrap()
+                    self.local_state.current.as_mut().unwrap()
+                }
+                LengthKind::Varint => {
+                    self.local_state.current = Some(LengthDelimitedRecordsReader::create(
+                        next_file,
+                        DelimitedLengthKind::Varint,
+                    ));
+
+                    self.local_state.current.as_mut().unwrap()
+                }
+                LengthKind::SingleMessagePerFile => {
+                    let mut bytes = Vec::new();
+                    next_file.read_to_end(&mut bytes)?;
+                    return Ok(Some(bytes));
+                }
+            }
         };
 
         let Some(next_message) = file_reader.try_get_next()? else {

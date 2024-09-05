@@ -11,8 +11,7 @@ use strum::{AsRefStr, EnumIter, EnumString, IntoEnumIterator};
 pub enum LengthKind {
     BigEndianFixed,
     Varint,
-    // todo: put this back
-    // SingleMessagePerFile,
+    SingleMessagePerFile,
 }
 
 pub fn parse<T: std::str::FromStr<Err = impl Error> + IntoEnumIterator + AsRef<str>>(
@@ -31,9 +30,15 @@ pub fn parse<T: std::str::FromStr<Err = impl Error> + IntoEnumIterator + AsRef<s
     })?)
 }
 
+#[derive(Copy, Clone)]
+pub enum DelimitedLengthKind {
+    BigEndianFixed,
+    Varint,
+}
+
 #[self_referencing]
 pub struct LengthDelimitedRecordsReader {
-    length_kind: LengthKind,
+    length_kind: DelimitedLengthKind,
     inner: File,
 
     #[borrows(mut inner)]
@@ -42,7 +47,7 @@ pub struct LengthDelimitedRecordsReader {
 }
 
 impl LengthDelimitedRecordsReader {
-    pub fn create(inner: File, length_kind: LengthKind) -> Self {
+    pub fn create(inner: File, length_kind: DelimitedLengthKind) -> Self {
         LengthDelimitedRecordsReaderBuilder {
             length_kind,
             inner,
@@ -55,8 +60,8 @@ impl LengthDelimitedRecordsReader {
         let length_kind = *self.borrow_length_kind();
         Ok(self.with_reader_mut(move |reader| {
             let len = match length_kind {
-                LengthKind::BigEndianFixed => reader.read_u32::<BigEndian>()?,
-                LengthKind::Varint => reader.read_raw_varint32()?,
+                DelimitedLengthKind::BigEndianFixed => reader.read_u32::<BigEndian>()?,
+                DelimitedLengthKind::Varint => reader.read_raw_varint32()?,
             };
 
             let mut buf = vec![0; len as usize];
