@@ -105,9 +105,6 @@ streams with little upfront load complexity or time.
 
 * doesn't support a few types (bytes, maps, {s,}fixed{32,64}, sint{32,64}), 
   contributions and even feedback that these field types are used is welcome!
-* execution is single threaded (limitations of the rust bindings)
-* no community plugin due to lack of out of tree build support from duckdb 
-  community repository
 
 i'm releasing this to understand how other folks are using protobuf streams and
 duckdb. i'm open to PRs, issues and other feedback.
