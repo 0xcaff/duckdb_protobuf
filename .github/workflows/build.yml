@@ -31,6 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - run: make load_vendored
+
       - run: cargo build --target ${{ matrix.target }} --release
 
       - name: attach metadata

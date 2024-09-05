@@ -2,7 +2,15 @@
 resolver = "2"
 
 members = [
+    "packages/vendor/duckdb",
+    "packages/vendor/duckdb-loadable-macros",
+    "packages/vendor/libduckdb-sys",
     "packages/duckdb_metadata",
     "packages/duckdb_metadata_bin",
     "packages/duckdb_protobuf"
 ]
+
+[patch.crates-io]
+duckdb = { path = 'packages/vendor/duckdb' }
+duckdb-loadable-macros = { path = 'packages/vendor/duckdb-loadable-macros' }
+libduckdb-sys = { path = 'packages/vendor/libduckdb-sys' }
