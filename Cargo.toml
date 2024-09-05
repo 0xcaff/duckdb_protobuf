@@ -8,3 +8,7 @@ members = [
     "packages/duckdb_metadata_bin",
     "packages/duckdb_protobuf"
 ]
+
+[patch.crates-io]
+duckdb = { path = 'packages/duckdb' }
+duckdb-loadable-macros = { path = 'packages/duckdb-loadable-macros' }
