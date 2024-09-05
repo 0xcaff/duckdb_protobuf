@@ -1,6 +1,6 @@
 diff -ruN packages/backup/duckdb-loadable-macros/Cargo.toml packages/vendor/duckdb-loadable-macros/Cargo.toml
 --- a/Cargo.toml	1969-12-31 18:00:01
-+++ b/Cargo.toml	2024-09-04 22:41:16
++++ b/Cargo.toml	2024-09-05 00:42:50
 @@ -46,3 +46,6 @@
      "fold",
      "parsing",
@@ -10,7 +10,7 @@ diff -ruN packages/backup/duckdb-loadable-macros/Cargo.toml packages/vendor/duck
 +version = "0.20.10"
 diff -ruN packages/backup/duckdb-loadable-macros/src/lib.rs packages/vendor/duckdb-loadable-macros/src/lib.rs
 --- a/src/lib.rs	2006-07-23 20:21:28
-+++ b/src/lib.rs	2024-09-04 23:21:05
++++ b/src/lib.rs	2024-09-05 02:30:06
 @@ -1,25 +1,100 @@
  #![allow(clippy::redundant_clone)]
 -use proc_macro2::{Ident, Span};
@@ -74,10 +74,10 @@ diff -ruN packages/backup/duckdb-loadable-macros/src/lib.rs packages/vendor/duck
 +                ///
 +                /// Will be called by duckdb
 +                #[no_mangle]
-+                pub unsafe extern "C" fn #c_entrypoint(info: ffi::duckdb_extension_info, access: ffi::duckdb_extension_access) {
-+                    ffi::duckdb_rs_extension_api_init(info, access, #minimum_duckdb_version_literal).expect("Failed to initialize DuckDB C Extension API");
++                pub unsafe extern "C" fn #c_entrypoint(info: ffi::duckdb_extension_info, access: *const ffi::duckdb_extension_access) {
++                    ffi::duckdb_rs_extension_api_init(info, *access, #minimum_duckdb_version_literal).expect("Failed to initialize DuckDB C Extension API");
 +
-+                    let db : ffi::duckdb_database = *access.get_database.unwrap()(info);
++                    let db : ffi::duckdb_database = *(*access).get_database.unwrap()(info);
 +                    let connection = Connection::open_from_raw(db.cast()).expect("can't open db connection");
 +                    #prefixed_original_function(connection).expect("init failed");
 +                }
