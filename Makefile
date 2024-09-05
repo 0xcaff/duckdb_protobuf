@@ -30,9 +30,9 @@ packages/vendor/libduckdb-sys:
 	mkdir -p packages/vendor/libduckdb-sys
 	curl -L https://crates.io/api/v1/crates/libduckdb-sys/1.0.0/download | tar --strip-components=1 -xz -C packages/vendor/libduckdb-sys
 
-load_vendored: packages/vendor/duckdb packages/vendor/duckdb-loadable-macros packages/vendor/libduckdb-sys
+vendor: packages/vendor/duckdb packages/vendor/duckdb-loadable-macros packages/vendor/libduckdb-sys
 
-debug:
+debug: vendor
 	cargo build --package duckdb_protobuf
 	cargo run \
 		--package duckdb_metadata_bin \
@@ -44,7 +44,7 @@ debug:
 		--duckdb-version $(DUCKDB_VERSION) \
 		--platform $(DUCKDB_PLATFORM)
 
-release:
+release: vendor
 	cargo build --package duckdb_protobuf --release
 	cargo run \
 		--package duckdb_metadata_bin \
@@ -59,9 +59,9 @@ release:
 test: release
 	cargo test --package duckdb_protobuf
 
-run: release
+install: release
 	duckdb \
 		-unsigned \
-		-cmd "LOAD 'target/release/protobuf.duckdb_extension'"
+		-cmd "FORCE INSTALL 'target/release/protobuf.duckdb_extension'"
 
-.PHONY: debug release test load_vendored run-debug
+.PHONY: test release debug vendor
