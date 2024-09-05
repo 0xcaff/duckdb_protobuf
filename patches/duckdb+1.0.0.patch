@@ -47,7 +47,7 @@ diff -ruN packages/vendor/duckdb/src/vtab/mod.rs packages/vendor/duckdb/src/vtab
 @@ -148,6 +148,19 @@
      }
  }
-
+ 
 +unsafe extern "C" fn local_init<T>(info: duckdb_init_info)
 +where
 +    T: VTabLocalData,
@@ -66,7 +66,7 @@ diff -ruN packages/vendor/duckdb/src/vtab/mod.rs packages/vendor/duckdb/src/vtab
      T: VTab,
 @@ -162,26 +175,21 @@
  }
-
+ 
  impl Connection {
 -    /// Register the given TableFunction with the current db
 -    #[inline]
@@ -96,7 +96,7 @@ diff -ruN packages/vendor/duckdb/src/vtab/mod.rs packages/vendor/duckdb/src/vtab
 +        self.db.borrow_mut().register_table_function(table_function)
 +    }
  }
-
+ 
 +
  impl InnerConnection {
      /// Register the given TableFunction with the current db
@@ -135,5 +135,5 @@ diff -ruN packages/vendor/duckdb/src/vtab/mod.rs packages/vendor/duckdb/src/vtab
 +    table_function.set_local_init(Some(local_init::<T>));
 +    table_function
  }
-
+ 
  #[cfg(test)]
