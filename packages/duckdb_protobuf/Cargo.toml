@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.86"
-duckdb = { version = "1.0.0", features = ["vtab-loadable", "loadable_extension"] }
+duckdb = { version = "1.0.0", features = ["vtab-loadable", "bundled"] }
 duckdb-loadable-macros = "0.1.2"
 prost-reflect = "0.14.0"
 protobuf = "3.5.0"
