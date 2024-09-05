@@ -52,7 +52,7 @@ release:
 		--platform $(DUCKDB_PLATFORM)
 
 test: release
-	cargo test
+	cargo test --package duckdb_protobuf
 
 run: debug
 	duckdb \
