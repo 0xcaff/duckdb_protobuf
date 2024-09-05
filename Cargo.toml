@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "packages/duckdb",
+    "packages/duckdb-loadable-macros",
     "packages/duckdb_metadata",
     "packages/duckdb_metadata_bin",
     "packages/duckdb_protobuf"
