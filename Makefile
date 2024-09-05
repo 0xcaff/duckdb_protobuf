@@ -17,15 +17,19 @@ ifeq ($(DUCKDB_PLATFORM),linux_amd64)
 	LIBRARY_OUTPUT := libduckdb_protobuf.so
 endif
 
-packages/duckdb:
-	mkdir -p packages/duckdb
-	curl -L https://crates.io/api/v1/crates/duckdb/1.0.0/download | tar --strip-components=1 -xz -C packages/duckdb
+packages/vendor/duckdb:
+	mkdir -p packages/vendor/duckdb
+	curl -L https://crates.io/api/v1/crates/duckdb/1.0.0/download | tar --strip-components=1 -xz -C packages/vendor/duckdb
 
-packages/duckdb-loadable-macros:
-	mkdir -p packages/duckdb-loadable-macros
-	curl -L https://crates.io/api/v1/crates/duckdb-loadable-macros/0.1.1/download | tar --strip-components=1 -xz -C packages/duckdb-loadable-macros
+packages/vendor/duckdb-loadable-macros:
+	mkdir -p packages/vendor/duckdb-loadable-macros
+	curl -L https://crates.io/api/v1/crates/duckdb-loadable-macros/0.1.1/download | tar --strip-components=1 -xz -C packages/vendor/duckdb-loadable-macros
 
-load_vendored: packages/duckdb packages/duckdb-loadable-macros
+packages/vendor/libduckdb-sys:
+	mkdir -p packages/vendor/libduckdb-sys
+	curl -L https://crates.io/api/v1/crates/libduckdb-sys/1.0.0/download | tar --strip-components=1 -xz -C packages/vendor/libduckdb-sys
+
+load_vendored: packages/vendor/duckdb packages/vendor/duckdb-loadable-macros packages/vendor/libduckdb-sys
 
 debug:
 	cargo build --package duckdb_protobuf

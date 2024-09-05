@@ -839,7 +839,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "duckdb",
- "duckdb-loadable-macros 0.1.1",
+ "duckdb-loadable-macros 0.1.2",
  "glob",
  "log",
  "ouroboros",
@@ -1248,9 +1248,8 @@ checksum = "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
 [[package]]
 name = "libduckdb-sys"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa48143af4679c674db9ad7951ff1d3ce67b8b55578e523d96af54152df6c13b"
 dependencies = [
+ "arrow",
  "autocfg",
  "bindgen",
  "cc",

@@ -1,4 +1,3 @@
 /target
 
-packages/duckdb
-packages/duckdb-loadable-macros
+packages/vendor
