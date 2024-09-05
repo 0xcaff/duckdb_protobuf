@@ -4,7 +4,7 @@
 # la just).
 
 DUCKDB_PLATFORM := osx_arm64
-DUCDKB_EXTENSION_VERSION := v0.0.1
+DUCKDB_EXTENSION_VERSION := v0.0.1
 DUCKDB_VERSION := v1.0.0
 
 ifeq ($(DUCKDB_PLATFORM),windows_amd64)
@@ -47,11 +47,16 @@ release:
 		-- \
 		--input target/debug/$(LIBRARY_OUTPUT) \
 		--output target/release/protobuf.duckdb_extension \
-		--extension-version $(DUCDKB_EXTENSION_VERSION) \
+		--extension-version $(DUCKDB_EXTENSION_VERSION) \
 		--duckdb-version $(DUCKDB_VERSION) \
 		--platform $(DUCKDB_PLATFORM)
 
 test: release
 	cargo test
 
-.PHONY: debug release test load_vendored
+run: debug
+	duckdb \
+		-unsigned \
+		-cmd "LOAD 'target/release/protobuf.duckdb_extension'"
+
+.PHONY: debug release test load_vendored run-debug
