@@ -20,6 +20,7 @@ endif
 packages/vendor/duckdb:
 	mkdir -p packages/vendor/duckdb
 	curl -L https://crates.io/api/v1/crates/duckdb/1.0.0/download | tar --strip-components=1 -xz -C packages/vendor/duckdb
+	patch --strip=1 --directory=packages/vendor/duckdb < patches/duckdb+1.0.0.patch
 
 packages/vendor/duckdb-loadable-macros:
 	mkdir -p packages/vendor/duckdb-loadable-macros
