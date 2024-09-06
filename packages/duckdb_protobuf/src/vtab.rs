@@ -6,13 +6,14 @@ use duckdb::vtab::{
 };
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 use std::error::Error;
+use std::ffi::CString;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind};
-use crate::read::write_to_output;
+use crate::read::{write_to_output, VectorAccessor};
 use crate::types::into_logical_type;
 
 pub struct Parameters {
@@ -21,6 +22,7 @@ pub struct Parameters {
     pub message_name: String,
     pub shared_message_descriptor: MessageDescriptor,
     pub length_kind: LengthKind,
+    pub include_filename: bool,
 }
 
 impl Parameters {
@@ -62,18 +64,23 @@ impl Parameters {
         let length_kind = parse::<LengthKind>(&length_kind.to_string())
             .map_err(|err| format_err!("when parsing parameter delimiter: {}", err))?;
 
+        let include_filename = bind
+            .get_named_parameter("filename")
+            .map(|value| value.to_int64() != 0)
+            .unwrap_or(false);
+
         Ok(Self {
             files,
             descriptor_bytes,
             message_name,
             shared_message_descriptor: message_descriptor,
             length_kind,
+            include_filename,
         })
     }
 
     pub fn message_descriptor(&self) -> Result<MessageDescriptor, anyhow::Error> {
-        let descriptor_pool =
-            DescriptorPool::decode(self.descriptor_bytes.as_slice())?;
+        let descriptor_pool = DescriptorPool::decode(self.descriptor_bytes.as_slice())?;
 
         let message_descriptor = descriptor_pool
             .get_message_by_name(&self.message_name)
@@ -100,10 +107,13 @@ impl Parameters {
                 "delimiter".to_string(),
                 LogicalType::new(LogicalTypeId::Varchar),
             ),
+            (
+                "filename".to_string(),
+                LogicalType::new(LogicalTypeId::Boolean),
+            ),
         ]
     }
 }
-
 pub struct GlobalState {
     queue: ArrayQueue<PathBuf>,
 }
@@ -173,6 +183,10 @@ impl ProtobufVTab {
 
         let params = Parameters::from_bind_info(bind)?;
 
+        if params.include_filename {
+            bind.add_result_column("filename", LogicalType::new(LogicalTypeId::Varchar));
+        }
+
         for field_descriptor in params.shared_message_descriptor.fields() {
             bind.add_result_column(
                 field_descriptor.name().as_ref(),
@@ -221,15 +235,43 @@ impl ProtobufVTab {
         let mut column_information = Default::default();
 
         for output_row_idx in 0..available_chunk_size {
-            let bytes = match state_container.next_message()? {
+            let (path, bytes) = match state_container.next_message()? {
                 None => break,
                 Some(bytes) => bytes,
             };
 
-            let message =
-                DynamicMessage::decode(local_descriptor.clone(), bytes.as_slice())?;
+            let message = DynamicMessage::decode(local_descriptor.clone(), bytes.as_slice())?;
+
+            let field_offset = if parameters.include_filename {
+                let it = (|| -> Option<CString> {
+                    let value = CString::new(path.path().to_str()?).ok()?;
+
+                    Some(value)
+                })();
+
+                let column = output.get_vector(0);
+
+                match it {
+                    None => unsafe {
+                        let validity = duckdb::ffi::duckdb_vector_get_validity(column);
+                        duckdb::ffi::duckdb_validity_set_row_invalid(validity, output_row_idx as _);
+                    },
+                    Some(value) => unsafe {
+                        duckdb::ffi::duckdb_vector_assign_string_element(
+                            column,
+                            output_row_idx as _,
+                            value.as_ptr(),
+                        )
+                    },
+                }
+
+                1
+            } else {
+                0
+            };
 
             write_to_output(
+                field_offset,
                 &mut column_information,
                 &message,
                 output,
@@ -252,47 +294,59 @@ struct StateContainer<'a> {
     parameters: &'a Parameters,
 }
 
-impl StateContainer<'_> {
-    fn next_message(&mut self) -> Result<Option<Vec<u8>>, anyhow::Error> {
-        let file_reader = if let Some(reader) = &mut self.local_state.current {
-            reader
-        } else {
-            let Some(next_file_path) = self.global_state.queue.pop() else {
-                return Ok(None);
-            };
+enum PathReference<'a> {
+    Borrowed(&'a Path),
+    Owned(PathBuf),
+}
 
-            let mut next_file = File::open(&next_file_path)?;
-            match self.parameters.length_kind {
-                LengthKind::BigEndianFixed => {
-                    self.local_state.current = Some(LengthDelimitedRecordsReader::create(
+impl<'a> PathReference<'a> {
+    pub fn path(&self) -> &Path {
+        match self {
+            PathReference::Borrowed(it) => *it,
+            PathReference::Owned(it) => it.as_path(),
+        }
+    }
+}
+
+impl StateContainer<'_> {
+    fn next_message(&mut self) -> Result<Option<(PathReference, Vec<u8>)>, anyhow::Error> {
+        let mut value = match self.local_state.current.take() {
+            Some(it) => it,
+            None => {
+                let Some(next_file_path) = self.global_state.queue.pop() else {
+                    return Ok(None);
+                };
+
+                let mut next_file = File::open(&next_file_path)?;
+                match self.parameters.length_kind {
+                    LengthKind::BigEndianFixed => LengthDelimitedRecordsReader::create(
                         next_file,
                         DelimitedLengthKind::BigEndianFixed,
-                    ));
-
-                    self.local_state.current.as_mut().unwrap()
-                }
-                LengthKind::Varint => {
-                    self.local_state.current = Some(LengthDelimitedRecordsReader::create(
+                        next_file_path,
+                    ),
+                    LengthKind::Varint => LengthDelimitedRecordsReader::create(
                         next_file,
                         DelimitedLengthKind::Varint,
-                    ));
-
-                    self.local_state.current.as_mut().unwrap()
-                }
-                LengthKind::SingleMessagePerFile => {
-                    let mut bytes = Vec::new();
-                    next_file.read_to_end(&mut bytes)?;
-                    return Ok(Some(bytes));
+                        next_file_path,
+                    ),
+                    LengthKind::SingleMessagePerFile => {
+                        let mut bytes = Vec::new();
+                        next_file.read_to_end(&mut bytes)?;
+                        return Ok(Some((PathReference::Owned(next_file_path), bytes)));
+                    }
                 }
             }
         };
 
-        let Some(next_message) = file_reader.try_get_next()? else {
-            self.local_state.current = None;
+        let Some(next_message) = value.try_get_next()? else {
             return Ok(None);
         };
 
-        Ok(Some(next_message))
+        self.local_state.current = Some(value);
+        Ok(Some((
+            PathReference::Borrowed(self.local_state.current.as_ref().unwrap().path()),
+            next_message,
+        )))
     }
 }
 

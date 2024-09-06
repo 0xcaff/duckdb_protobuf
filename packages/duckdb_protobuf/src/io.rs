@@ -5,6 +5,7 @@ use protobuf::CodedInputStream;
 use std::error::Error;
 use std::fs::File;
 use std::io;
+use std::path::{Path, PathBuf};
 use strum::{AsRefStr, EnumIter, EnumString, IntoEnumIterator};
 
 #[derive(Copy, Clone, EnumString, EnumIter, AsRefStr)]
@@ -39,6 +40,7 @@ pub enum DelimitedLengthKind {
 #[self_referencing]
 pub struct LengthDelimitedRecordsReader {
     length_kind: DelimitedLengthKind,
+    path: PathBuf,
     inner: File,
 
     #[borrows(mut inner)]
@@ -47,9 +49,10 @@ pub struct LengthDelimitedRecordsReader {
 }
 
 impl LengthDelimitedRecordsReader {
-    pub fn create(inner: File, length_kind: DelimitedLengthKind) -> Self {
+    pub fn create(inner: File, length_kind: DelimitedLengthKind, path: PathBuf) -> Self {
         LengthDelimitedRecordsReaderBuilder {
             length_kind,
+            path,
             inner,
             reader_builder: |it| CodedInputStream::new(it),
         }
@@ -77,5 +80,9 @@ impl LengthDelimitedRecordsReader {
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
             Err(err) => Err(err.into()),
         }
+    }
+
+    pub fn path(&self) -> &Path {
+        self.borrow_path().as_path()
     }
 }
