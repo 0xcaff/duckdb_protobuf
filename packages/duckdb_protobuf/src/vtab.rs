@@ -12,8 +12,8 @@ use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
-use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind};
-use crate::read::{write_to_output, VectorAccessor};
+use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
+use crate::read::{write_to_output, MyFlatVector, VectorAccessor};
 use crate::types::into_logical_type;
 
 pub struct Parameters {
@@ -23,6 +23,8 @@ pub struct Parameters {
     pub shared_message_descriptor: MessageDescriptor,
     pub length_kind: LengthKind,
     pub include_filename: bool,
+    pub include_size: bool,
+    pub include_offset: bool,
 }
 
 impl Parameters {
@@ -69,6 +71,16 @@ impl Parameters {
             .map(|value| value.to_int64() != 0)
             .unwrap_or(false);
 
+        let include_size = bind
+            .get_named_parameter("size")
+            .map(|value| value.to_int64() != 0)
+            .unwrap_or(false);
+
+        let include_offset = bind
+            .get_named_parameter("offset")
+            .map(|value| value.to_int64() != 0)
+            .unwrap_or(false);
+
         Ok(Self {
             files,
             descriptor_bytes,
@@ -76,6 +88,8 @@ impl Parameters {
             shared_message_descriptor: message_descriptor,
             length_kind,
             include_filename,
+            include_size,
+            include_offset,
         })
     }
 
@@ -109,6 +123,14 @@ impl Parameters {
             ),
             (
                 "filename".to_string(),
+                LogicalType::new(LogicalTypeId::Boolean),
+            ),
+            (
+                "size".to_string(),
+                LogicalType::new(LogicalTypeId::Boolean),
+            ),
+            (
+                "offset".to_string(),
                 LogicalType::new(LogicalTypeId::Boolean),
             ),
         ]
@@ -187,6 +209,14 @@ impl ProtobufVTab {
             bind.add_result_column("filename", LogicalType::new(LogicalTypeId::Varchar));
         }
 
+        if params.include_size {
+            bind.add_result_column("size", LogicalType::new(LogicalTypeId::UBigint));
+        }
+
+        if params.include_offset {
+            bind.add_result_column("offset", LogicalType::new(LogicalTypeId::UBigint));
+        }
+
         for field_descriptor in params.shared_message_descriptor.fields() {
             bind.add_result_column(
                 field_descriptor.name().as_ref(),
@@ -235,21 +265,28 @@ impl ProtobufVTab {
         let mut column_information = Default::default();
 
         for output_row_idx in 0..available_chunk_size {
-            let (path, bytes) = match state_container.next_message()? {
+            let StateContainerValue {
+                path_reference,
+                size: length,
+                bytes,
+                offset,
+            } = match state_container.next_message()? {
                 None => break,
-                Some(bytes) => bytes,
+                Some(message_info) => message_info,
             };
 
             let message = DynamicMessage::decode(local_descriptor.clone(), bytes.as_slice())?;
+            let path = path_reference.path();
 
-            let field_offset = if parameters.include_filename {
+            let mut field_offset = 0;
+
+            if parameters.include_filename {
                 let it = (|| -> Option<CString> {
-                    let value = CString::new(path.path().to_str()?).ok()?;
-
+                    let value = CString::new(path.to_str()?).ok()?;
                     Some(value)
                 })();
 
-                let column = output.get_vector(0);
+                let column = output.get_vector(field_offset);
 
                 match it {
                     None => unsafe {
@@ -265,10 +302,24 @@ impl ProtobufVTab {
                     },
                 }
 
-                1
-            } else {
-                0
-            };
+                field_offset += 1;
+            }
+
+            if parameters.include_size {
+                let column = output.get_vector(field_offset);
+                let mut vector =
+                    unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
+                vector.as_mut_slice()[output_row_idx] = length as _;
+                field_offset += 1;
+            }
+
+            if parameters.include_offset {
+                let column = output.get_vector(field_offset);
+                let mut vector =
+                    unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
+                vector.as_mut_slice()[output_row_idx] = offset as _;
+                field_offset += 1;
+            }
 
             write_to_output(
                 field_offset,
@@ -308,8 +359,15 @@ impl<'a> PathReference<'a> {
     }
 }
 
+struct StateContainerValue<'a> {
+    path_reference: PathReference<'a>,
+    bytes: Vec<u8>,
+    size: usize,
+    offset: u64,
+}
+
 impl StateContainer<'_> {
-    fn next_message(&mut self) -> Result<Option<(PathReference, Vec<u8>)>, anyhow::Error> {
+    fn next_message(&mut self) -> Result<Option<StateContainerValue>, anyhow::Error> {
         let mut value = match self.local_state.current.take() {
             Some(it) => it,
             None => {
@@ -332,21 +390,36 @@ impl StateContainer<'_> {
                     LengthKind::SingleMessagePerFile => {
                         let mut bytes = Vec::new();
                         next_file.read_to_end(&mut bytes)?;
-                        return Ok(Some((PathReference::Owned(next_file_path), bytes)));
+                        let size = bytes.len();
+                        return Ok(Some(StateContainerValue {
+                            bytes,
+                            path_reference: PathReference::Owned(next_file_path),
+                            offset: 0,
+                            size,
+                        }));
                     }
                 }
             }
         };
 
-        let Some(next_message) = value.try_get_next()? else {
+        let Some(Record {
+            offset,
+                     size,
+            bytes: next_message,
+        }) = value.try_get_next()?
+        else {
             return Ok(None);
         };
 
         self.local_state.current = Some(value);
-        Ok(Some((
-            PathReference::Borrowed(self.local_state.current.as_ref().unwrap().path()),
-            next_message,
-        )))
+        Ok(Some(StateContainerValue {
+            path_reference: PathReference::Borrowed(
+                self.local_state.current.as_ref().unwrap().path(),
+            ),
+            bytes: next_message,
+            size: size as _,
+            offset,
+        }))
     }
 }
 

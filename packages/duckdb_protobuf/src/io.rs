@@ -48,6 +48,12 @@ pub struct LengthDelimitedRecordsReader {
     reader: CodedInputStream<'this>,
 }
 
+pub struct Record {
+    pub bytes: Vec<u8>,
+    pub offset: u64,
+    pub size: u32,
+}
+
 impl LengthDelimitedRecordsReader {
     pub fn create(inner: File, length_kind: DelimitedLengthKind, path: PathBuf) -> Self {
         LengthDelimitedRecordsReaderBuilder {
@@ -59,9 +65,10 @@ impl LengthDelimitedRecordsReader {
         .build()
     }
 
-    fn get_next(&mut self) -> Result<Vec<u8>, io::Error> {
+    fn get_next(&mut self) -> Result<Record, io::Error> {
         let length_kind = *self.borrow_length_kind();
         Ok(self.with_reader_mut(move |reader| {
+            let offset = reader.pos();
             let len = match length_kind {
                 DelimitedLengthKind::BigEndianFixed => reader.read_u32::<BigEndian>()?,
                 DelimitedLengthKind::Varint => reader.read_raw_varint32()?,
@@ -70,11 +77,15 @@ impl LengthDelimitedRecordsReader {
             let mut buf = vec![0; len as usize];
             <CodedInputStream as io::Read>::read_exact(reader, &mut buf)?;
 
-            Ok::<_, io::Error>(buf)
+            Ok::<_, io::Error>(Record {
+                bytes: buf,
+                offset,
+                size: len,
+            })
         })?)
     }
 
-    pub fn try_get_next(&mut self) -> Result<Option<Vec<u8>>, io::Error> {
+    pub fn try_get_next(&mut self) -> Result<Option<Record>, io::Error> {
         match self.get_next() {
             Ok(it) => Ok(Some(it)),
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
