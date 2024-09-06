@@ -4,7 +4,7 @@ use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
     VTabLocalData,
 };
-use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
+use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, ReflectMessage};
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::File;
@@ -202,6 +202,13 @@ impl ProtobufVTab {
 
         let params = Parameters::from_bind_info(bind)?;
 
+        for field_descriptor in params.shared_message_descriptor.fields() {
+            bind.add_result_column(
+                field_descriptor.name().as_ref(),
+                into_logical_type(&field_descriptor)?,
+            );
+        }
+
         if params.include_filename {
             bind.add_result_column("filename", LogicalType::new(LogicalTypeId::Varchar));
         }
@@ -212,13 +219,6 @@ impl ProtobufVTab {
 
         if params.include_size {
             bind.add_result_column("size", LogicalType::new(LogicalTypeId::UBigint));
-        }
-
-        for field_descriptor in params.shared_message_descriptor.fields() {
-            bind.add_result_column(
-                field_descriptor.name().as_ref(),
-                into_logical_type(&field_descriptor)?,
-            );
         }
 
         data.assign(params);
@@ -273,13 +273,20 @@ impl ProtobufVTab {
             };
 
             let message = DynamicMessage::decode(local_descriptor.clone(), bytes.as_slice())?;
-            let path = path_reference.path();
 
-            let mut field_offset = 0;
+            write_to_output(
+                &mut column_information,
+                &message,
+                output,
+                available_chunk_size,
+                output_row_idx,
+            )?;
+
+            let mut field_offset = message.descriptor().fields().len();
 
             if parameters.include_filename {
                 let it = (|| -> Option<CString> {
-                    let value = CString::new(path.to_str()?).ok()?;
+                    let value = CString::new(path_reference.path().to_str()?).ok()?;
                     Some(value)
                 })();
 
@@ -315,17 +322,7 @@ impl ProtobufVTab {
                 let mut vector =
                     unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
                 vector.as_mut_slice()[output_row_idx] = length as _;
-                field_offset += 1;
             }
-
-            write_to_output(
-                field_offset,
-                &mut column_information,
-                &message,
-                output,
-                available_chunk_size,
-                output_row_idx,
-            )?;
 
             items += 1;
         }

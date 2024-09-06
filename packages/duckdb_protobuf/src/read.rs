@@ -8,7 +8,6 @@ use duckdb::vtab::DataChunk;
 use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 
 pub fn write_to_output(
-    root_field_offset: usize,
     columns_state: &mut HashMap<ColumnKey, u64>,
     value: &DynamicMessage,
     output: &DataChunk,
@@ -16,7 +15,6 @@ pub fn write_to_output(
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
     write_message(
-        root_field_offset,
         columns_state,
         &ColumnKey::empty(),
         value,
@@ -27,7 +25,6 @@ pub fn write_to_output(
 }
 
 pub fn write_message(
-    field_offset: usize,
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
     value: &DynamicMessage,
@@ -36,7 +33,7 @@ pub fn write_message(
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
     for (field_idx, field_descriptor) in value.descriptor().fields().enumerate() {
-        let column_vector = output.get_vector(field_offset + field_idx);
+        let column_vector = output.get_vector(field_idx);
         let value = value.get_field(&field_descriptor);
 
         let column_key = column_key.field(&field_descriptor);
@@ -201,7 +198,6 @@ pub fn write_single_column(
             let source = unsafe { StructVector::new(column) };
 
             write_message(
-                0,
                 columns_state,
                 column_key,
                 message,
