@@ -50,7 +50,7 @@ pub struct LengthDelimitedRecordsReader {
 
 pub struct Record {
     pub bytes: Vec<u8>,
-    pub offset: u64,
+    pub position: u64,
     pub size: u32,
 }
 
@@ -68,7 +68,7 @@ impl LengthDelimitedRecordsReader {
     fn get_next(&mut self) -> Result<Record, io::Error> {
         let length_kind = *self.borrow_length_kind();
         Ok(self.with_reader_mut(move |reader| {
-            let offset = reader.pos();
+            let position = reader.pos();
             let len = match length_kind {
                 DelimitedLengthKind::BigEndianFixed => reader.read_u32::<BigEndian>()?,
                 DelimitedLengthKind::Varint => reader.read_raw_varint32()?,
@@ -79,7 +79,7 @@ impl LengthDelimitedRecordsReader {
 
             Ok::<_, io::Error>(Record {
                 bytes: buf,
-                offset,
+                position,
                 size: len,
             })
         })?)

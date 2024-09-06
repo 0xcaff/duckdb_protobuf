@@ -23,8 +23,8 @@ pub struct Parameters {
     pub shared_message_descriptor: MessageDescriptor,
     pub length_kind: LengthKind,
     pub include_filename: bool,
+    pub include_position: bool,
     pub include_size: bool,
-    pub include_offset: bool,
 }
 
 impl Parameters {
@@ -71,13 +71,13 @@ impl Parameters {
             .map(|value| value.to_int64() != 0)
             .unwrap_or(false);
 
-        let include_size = bind
-            .get_named_parameter("size")
+        let include_position = bind
+            .get_named_parameter("position")
             .map(|value| value.to_int64() != 0)
             .unwrap_or(false);
 
-        let include_offset = bind
-            .get_named_parameter("offset")
+        let include_size = bind
+            .get_named_parameter("size")
             .map(|value| value.to_int64() != 0)
             .unwrap_or(false);
 
@@ -88,8 +88,8 @@ impl Parameters {
             shared_message_descriptor: message_descriptor,
             length_kind,
             include_filename,
+            include_position,
             include_size,
-            include_offset,
         })
     }
 
@@ -126,13 +126,10 @@ impl Parameters {
                 LogicalType::new(LogicalTypeId::Boolean),
             ),
             (
-                "size".to_string(),
+                "position".to_string(),
                 LogicalType::new(LogicalTypeId::Boolean),
             ),
-            (
-                "offset".to_string(),
-                LogicalType::new(LogicalTypeId::Boolean),
-            ),
+            ("size".to_string(), LogicalType::new(LogicalTypeId::Boolean)),
         ]
     }
 }
@@ -209,12 +206,12 @@ impl ProtobufVTab {
             bind.add_result_column("filename", LogicalType::new(LogicalTypeId::Varchar));
         }
 
-        if params.include_size {
-            bind.add_result_column("size", LogicalType::new(LogicalTypeId::UBigint));
+        if params.include_position {
+            bind.add_result_column("position", LogicalType::new(LogicalTypeId::UBigint));
         }
 
-        if params.include_offset {
-            bind.add_result_column("offset", LogicalType::new(LogicalTypeId::UBigint));
+        if params.include_size {
+            bind.add_result_column("size", LogicalType::new(LogicalTypeId::UBigint));
         }
 
         for field_descriptor in params.shared_message_descriptor.fields() {
@@ -269,7 +266,7 @@ impl ProtobufVTab {
                 path_reference,
                 size: length,
                 bytes,
-                offset,
+                position,
             } = match state_container.next_message()? {
                 None => break,
                 Some(message_info) => message_info,
@@ -305,19 +302,19 @@ impl ProtobufVTab {
                 field_offset += 1;
             }
 
+            if parameters.include_position {
+                let column = output.get_vector(field_offset);
+                let mut vector =
+                    unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
+                vector.as_mut_slice()[output_row_idx] = position as _;
+                field_offset += 1;
+            }
+
             if parameters.include_size {
                 let column = output.get_vector(field_offset);
                 let mut vector =
                     unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
                 vector.as_mut_slice()[output_row_idx] = length as _;
-                field_offset += 1;
-            }
-
-            if parameters.include_offset {
-                let column = output.get_vector(field_offset);
-                let mut vector =
-                    unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
-                vector.as_mut_slice()[output_row_idx] = offset as _;
                 field_offset += 1;
             }
 
@@ -363,7 +360,7 @@ struct StateContainerValue<'a> {
     path_reference: PathReference<'a>,
     bytes: Vec<u8>,
     size: usize,
-    offset: u64,
+    position: u64,
 }
 
 impl StateContainer<'_> {
@@ -394,7 +391,7 @@ impl StateContainer<'_> {
                         return Ok(Some(StateContainerValue {
                             bytes,
                             path_reference: PathReference::Owned(next_file_path),
-                            offset: 0,
+                            position: 0,
                             size,
                         }));
                     }
@@ -403,8 +400,8 @@ impl StateContainer<'_> {
         };
 
         let Some(Record {
-            offset,
-                     size,
+            position,
+            size,
             bytes: next_message,
         }) = value.try_get_next()?
         else {
@@ -418,7 +415,7 @@ impl StateContainer<'_> {
             ),
             bytes: next_message,
             size: size as _,
-            offset,
+            position,
         }))
     }
 }
