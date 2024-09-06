@@ -264,7 +264,7 @@ impl ProtobufVTab {
         for output_row_idx in 0..available_chunk_size {
             let StateContainerValue {
                 path_reference,
-                size: length,
+                size,
                 bytes,
                 position,
             } = match state_container.next_message()? {
@@ -321,7 +321,7 @@ impl ProtobufVTab {
                 let column = output.get_vector(field_offset);
                 let mut vector =
                     unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
-                vector.as_mut_slice()[output_row_idx] = length as _;
+                vector.as_mut_slice()[output_row_idx] = size as _;
             }
 
             items += 1;
