@@ -95,6 +95,8 @@ streams with little upfront load complexity or time.
     ([encoding](https://protobuf.dev/programming-guides/encoding/#varints)). 
     files are a sequence of messages
   * `SingleMessagePerFile`: each file contains a single message
+* `filename`, `position` and `size`: boolean values enabling columns which add
+  source information about where the messages originated from
 
 ## features
 
