@@ -52,7 +52,7 @@ pub fn write_message(
     Ok(())
 }
 
-struct MyFlatVector<T> {
+pub struct MyFlatVector<T> {
     _phantom_data: PhantomData<T>,
     ptr: duckdb::ffi::duckdb_vector,
     capacity: usize,
