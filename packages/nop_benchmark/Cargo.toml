@@ -1,0 +1,12 @@
+[package]
+name = "nop_benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+duckdb = { version = "1.0.0", features = ["vtab-loadable", "bundled"] }
+duckdb-loadable-macros = "0.1.2"
+anyhow = "1.0.86"
