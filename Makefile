@@ -62,7 +62,7 @@ test: release
 install: release
 	duckdb \
 		-unsigned \
-		-cmd "FORCE INSTALL 'target/release/protobuf.duckdb_extension'"
+		-cmd "FORCE INSTALL 'target/release/protobuf.duckdb_extension'" \
 		-no-stdin
 
 .PHONY: test release debug vendor
