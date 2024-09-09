@@ -1,20 +1,20 @@
+use crate::gen::{ParseContext, ParseIntoDuckDB, ParserState};
+use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
+use crate::read::{MyFlatVector, VectorAccessor};
+use crate::types::into_logical_type;
 use anyhow::{format_err, Context};
 use crossbeam::queue::ArrayQueue;
 use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
     VTabLocalData,
 };
-use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, ReflectMessage};
+use prost_reflect::{DescriptorPool, MessageDescriptor};
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-
-use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
-use crate::read::{write_to_output, MyFlatVector, VectorAccessor};
-use crate::types::into_logical_type;
 
 pub struct Parameters {
     pub files: String,
@@ -259,7 +259,7 @@ impl ProtobufVTab {
         let available_chunk_size = output.flat_vector(0).capacity();
         let mut items = 0;
 
-        let mut column_information = Default::default();
+        let mut parser_state = ParserState::new();
 
         for output_row_idx in 0..available_chunk_size {
             let StateContainerValue {
@@ -272,17 +272,11 @@ impl ProtobufVTab {
                 Some(message_info) => message_info,
             };
 
-            let message = DynamicMessage::decode(local_descriptor.clone(), bytes.as_slice())?;
+            let mut ctx = ParseContext::new(bytes.as_slice(), &mut parser_state);
 
-            write_to_output(
-                &mut column_information,
-                &message,
-                output,
-                available_chunk_size,
-                output_row_idx,
-            )?;
+            // crate::gen::T::parse(&mut ctx, output_row_idx, output)?;
 
-            let mut field_offset = message.descriptor().fields().len();
+            let mut field_offset = local_descriptor.fields().len();
 
             if parameters.include_filename {
                 let it = (|| -> Option<CString> {

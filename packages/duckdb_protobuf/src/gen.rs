@@ -6,13 +6,13 @@ use std::collections::HashMap;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
-struct ParseContext<'a> {
+pub struct ParseContext<'a> {
     bytes: &'a [u8],
     parser_state: &'a mut ParserState,
     current_key: ColumnKey,
 }
 
-struct ParserState {
+pub struct ParserState {
     column_state: HashMap<ColumnKey, u64>,
 }
 
@@ -215,13 +215,17 @@ impl<'a> ParseContext<'a> {
             current_key: column_key,
         };
 
-        func(&mut context, child_vector, (next_offset + next_length - 1) as _)?;
+        func(
+            &mut context,
+            child_vector,
+            (next_offset + next_length - 1) as _,
+        )?;
 
         Ok(())
     }
 }
 
-trait ParseIntoDuckDB {
+pub trait ParseIntoDuckDB {
     fn parse(
         ctx: &mut ParseContext,
         row_idx: usize,

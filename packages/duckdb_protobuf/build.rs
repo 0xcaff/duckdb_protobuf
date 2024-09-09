@@ -81,7 +81,7 @@ fn generate_code(message: &MessageDescriptor) -> TokenStream {
         });
 
     quote! {
-        struct #message_ident;
+        pub struct #message_ident;
 
         impl crate::gen::ParseIntoDuckDB for #message_ident {
             fn parse(
