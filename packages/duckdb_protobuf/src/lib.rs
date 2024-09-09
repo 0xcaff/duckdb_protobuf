@@ -1,6 +1,8 @@
+mod gen;
 mod io;
 mod read;
 mod types;
+mod varint;
 mod vtab;
 
 use std::error::Error;

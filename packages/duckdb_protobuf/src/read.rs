@@ -36,7 +36,7 @@ pub fn write_message(
         let column_vector = output.get_vector(field_idx);
         let value = value.get_field(&field_descriptor);
 
-        let column_key = column_key.field(&field_descriptor);
+        let column_key = column_key.field(field_descriptor.number());
 
         write_column(
             columns_state,
@@ -307,10 +307,8 @@ pub struct ColumnKey {
 }
 
 impl ColumnKey {
-    pub fn field(&self, field: &FieldDescriptor) -> ColumnKey {
-        self.extending(ColumnKeyElement::Field {
-            field_tag: field.number(),
-        })
+    pub fn field(&self, field_tag: u32) -> ColumnKey {
+        self.extending(ColumnKeyElement::Field { field_tag })
     }
 
     pub fn extending(&self, key: ColumnKeyElement) -> ColumnKey {
@@ -336,10 +334,10 @@ impl VectorAccessor for DataChunk {
     }
 }
 
-struct StructVector(duckdb::ffi::duckdb_vector);
+pub struct StructVector(duckdb::ffi::duckdb_vector);
 
 impl StructVector {
-    unsafe fn new(value: duckdb::ffi::duckdb_vector) -> Self {
+    pub unsafe fn new(value: duckdb::ffi::duckdb_vector) -> Self {
         Self(value)
     }
 }
