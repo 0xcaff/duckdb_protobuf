@@ -118,9 +118,10 @@ fn generate_impl_for_kind(kind: Kind, field_idx: usize) -> Option<TokenStream> {
                     row_idx,
                     &target,
                 )?;
+
+                ctx.consume(len as _);
             }
         }
-
         Kind::String => {
             quote! {
                 ctx.read_string(output_vector, row_idx)?;
