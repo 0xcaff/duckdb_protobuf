@@ -1,10 +1,28 @@
-use crate::read::{ColumnKey, ColumnKeyElement, VectorAccessor};
+use std::collections::hash_map::Entry;
+use crate::read::{ColumnKey, VectorAccessor};
 use crate::varint::{decode_varint, DecodeVarint, IncorrectVarintError};
 use anyhow::format_err;
 use protobuf::rt::WireType;
 use std::collections::HashMap;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
+pub struct LocalRepeatedFieldsState {
+    state: HashMap<usize, LocalRepeatedFieldState>,
+}
+
+impl LocalRepeatedFieldsState {
+    pub fn new() -> LocalRepeatedFieldsState {
+        LocalRepeatedFieldsState {
+            state: HashMap::new()
+        }
+    }
+}
+
+struct LocalRepeatedFieldState {
+    length: u64,
+    offset: u64,
+}
 
 pub struct ParseContext<'a> {
     bytes: &'a [u8],
@@ -166,9 +184,11 @@ impl ParseContext<'_> {
 
     pub fn handle_repeated_field(
         &mut self,
+        local_repeated_field_state: &mut LocalRepeatedFieldsState,
+        field_idx: usize,
         output_vector: duckdb::ffi::duckdb_vector,
         row_idx: usize,
-        current_key: &ColumnKey,
+        column_key: &ColumnKey,
         func: impl FnOnce(
             &mut ParseContext,
             &ColumnKey,
@@ -176,7 +196,17 @@ impl ParseContext<'_> {
             usize,
         ) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        let column_key = current_key.extending(ColumnKeyElement::List);
+        let local_field_state = local_repeated_field_state.state.entry(field_idx);
+        let (offset, length) = match local_field_state {
+            Entry::Occupied(mut it) => {
+                let value = it.get_mut();
+                value.length += 1;
+                (value.offset, value.length)
+            }
+            Entry::Vacant(..) => {
+                (self.parser_state.column_state.get(&column_key).map(|it| *it).unwrap_or_default(), 1)
+            }
+        };
 
         let list_entry = unsafe {
             &mut *duckdb::ffi::duckdb_vector_get_data(output_vector)
@@ -184,29 +214,13 @@ impl ParseContext<'_> {
                 .add(row_idx)
         };
 
-        let next_offset_ref = self.parser_state.column_state.get_mut(&column_key);
-        let (next_offset, next_length) = if let Some(it) = &next_offset_ref {
-            (**it, list_entry.length + 1)
-        } else {
-            (0, 1)
-        };
 
-        list_entry.offset = next_offset;
-        list_entry.length = next_length;
+        list_entry.offset = offset;
+        list_entry.length = length;
 
-        let new_next_offset = next_offset + next_length;
-
-        if let Some(it) = next_offset_ref {
-            *it = new_next_offset;
-        } else {
-            self.parser_state
-                .column_state
-                .insert(column_key.clone(), new_next_offset);
-        }
-
-        let new_length = new_next_offset;
-        unsafe { duckdb::ffi::duckdb_list_vector_reserve(output_vector, new_length) };
-        unsafe { duckdb::ffi::duckdb_list_vector_set_size(output_vector, new_length) };
+        let new_root_length = offset + length;
+        unsafe { duckdb::ffi::duckdb_list_vector_reserve(output_vector, new_root_length) };
+        unsafe { duckdb::ffi::duckdb_list_vector_set_size(output_vector, new_root_length) };
 
         let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(output_vector) };
 
@@ -214,8 +228,15 @@ impl ParseContext<'_> {
             self,
             &column_key,
             child_vector,
-            (next_offset + next_length - 1) as _,
+            (new_root_length - 1) as _,
         )
+    }
+
+    pub fn consume_local_fields(&mut self, column_key: &ColumnKey, local_repeated_field_state: LocalRepeatedFieldsState) {
+        for (field_idx, field_state) in local_repeated_field_state.state.into_iter() {
+            let column_key = column_key.field(field_idx as _);
+            self.parser_state.column_state.insert(column_key, field_state.offset + field_state.length);
+        }
     }
 }
 

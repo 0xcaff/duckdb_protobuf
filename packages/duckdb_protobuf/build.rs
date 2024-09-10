@@ -58,6 +58,8 @@ fn generate_code(message: &MessageDescriptor) -> TokenStream {
                 Cardinality::Repeated => {
                     quote! {
                         ctx.handle_repeated_field(
+                            &mut local_repeated_fields_state,
+                            #field_idx,
                             output_vector,
                             row_idx,
                             &column_key,
@@ -75,6 +77,7 @@ fn generate_code(message: &MessageDescriptor) -> TokenStream {
             Some(quote! {
                 #tag => {
                     let output_vector = target.get_vector(#field_idx);
+                    let column_key = column_key.field(#field_idx as _);
 
                     #inner
                 }
@@ -91,6 +94,8 @@ fn generate_code(message: &MessageDescriptor) -> TokenStream {
                 column_key: &crate::read::ColumnKey,
                 target: &impl crate::read::VectorAccessor,
             ) -> anyhow::Result<()> {
+                let mut local_repeated_fields_state = crate::gen::LocalRepeatedFieldsState::new();
+
                 while let Some(tag) = ctx.read_varint::<u32>()? {
                     match tag {
                         #(#statements)*
@@ -99,6 +104,8 @@ fn generate_code(message: &MessageDescriptor) -> TokenStream {
                         }
                     };
                 };
+
+                ctx.consume_local_fields(column_key, local_repeated_fields_state);
 
                 Ok(())
             }
@@ -118,7 +125,7 @@ fn generate_impl_for_kind(kind: Kind, field_idx: usize) -> Option<TokenStream> {
                 <#message_ident as crate::gen::ParseIntoDuckDB>::parse(
                     &mut ctx.next(len as _, #field_idx),
                     row_idx,
-                    &column_key.field(#field_idx as _),
+                    &column_key,
                     &target,
                 )?;
 
