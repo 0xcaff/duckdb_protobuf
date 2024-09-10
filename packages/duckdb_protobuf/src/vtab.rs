@@ -1,6 +1,6 @@
 use crate::gen::{ParseContext, ParseIntoDuckDB, ParserState};
 use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
-use crate::read::{MyFlatVector, VectorAccessor};
+use crate::read::{ColumnKey, MyFlatVector, VectorAccessor};
 use crate::types::into_logical_type;
 use anyhow::{format_err, Context};
 use crossbeam::queue::ArrayQueue;
@@ -274,7 +274,12 @@ impl ProtobufVTab {
 
             let mut ctx = ParseContext::new(bytes.as_slice(), &mut parser_state);
 
-            // crate::gen::T::parse(&mut ctx, output_row_idx, output)?;
+            crate::gen::GetDreamMapResponse::parse(
+                &mut ctx,
+                output_row_idx,
+                &ColumnKey::empty(),
+                output,
+            )?;
 
             let mut field_offset = local_descriptor.fields().len();
 

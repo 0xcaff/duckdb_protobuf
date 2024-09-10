@@ -60,7 +60,8 @@ fn generate_code(message: &MessageDescriptor) -> TokenStream {
                         ctx.handle_repeated_field(
                             output_vector,
                             row_idx,
-                            |ctx, output_vector, row_idx| {
+                            &column_key,
+                            |ctx, column_key, output_vector, row_idx| {
                                 #handle_kind
 
                                 Ok(())
@@ -87,6 +88,7 @@ fn generate_code(message: &MessageDescriptor) -> TokenStream {
             fn parse(
                 ctx: &mut ParseContext,
                 row_idx: usize,
+                column_key: &crate::read::ColumnKey,
                 target: &impl crate::read::VectorAccessor,
             ) -> anyhow::Result<()> {
                 while let Some(tag) = ctx.read_varint::<u32>()? {
@@ -116,6 +118,7 @@ fn generate_impl_for_kind(kind: Kind, field_idx: usize) -> Option<TokenStream> {
                 <#message_ident as crate::gen::ParseIntoDuckDB>::parse(
                     &mut ctx.next(len as _, #field_idx),
                     row_idx,
+                    &column_key.field(#field_idx as _),
                     &target,
                 )?;
 

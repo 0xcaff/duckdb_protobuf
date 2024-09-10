@@ -9,7 +9,6 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 pub struct ParseContext<'a> {
     bytes: &'a [u8],
     parser_state: &'a mut ParserState,
-    current_key: ColumnKey,
 }
 
 pub struct ParserState {
@@ -29,12 +28,11 @@ impl ParseContext<'_> {
         ParseContext {
             bytes,
             parser_state,
-            current_key: ColumnKey::empty(),
         }
     }
 }
 
-impl<'a> ParseContext<'a> {
+impl ParseContext<'_> {
     #[inline]
     pub fn consume(&mut self, n: usize) {
         self.bytes = &self.bytes[n..];
@@ -44,8 +42,6 @@ impl<'a> ParseContext<'a> {
         ParseContext {
             bytes: &self.bytes[..limit],
             parser_state: self.parser_state,
-            // todo: remove the cast
-            current_key: self.current_key.field(field_tag as _),
         }
     }
 
@@ -69,7 +65,6 @@ impl<'a> ParseContext<'a> {
 
     pub fn skip_tag(&mut self, tag: u32) -> anyhow::Result<()> {
         let wire_type_value = tag & 0b111;
-
         let Some(wire_type) = WireType::new(wire_type_value) else {
             return Err(format_err!("unknown wire type {:#b}", wire_type_value));
         };
@@ -173,9 +168,15 @@ impl<'a> ParseContext<'a> {
         &mut self,
         output_vector: duckdb::ffi::duckdb_vector,
         row_idx: usize,
-        func: impl FnOnce(&mut ParseContext, duckdb::ffi::duckdb_vector, usize) -> anyhow::Result<()>,
+        current_key: &ColumnKey,
+        func: impl FnOnce(
+            &mut ParseContext,
+            &ColumnKey,
+            duckdb::ffi::duckdb_vector,
+            usize,
+        ) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        let column_key = self.current_key.extending(ColumnKeyElement::List);
+        let column_key = current_key.extending(ColumnKeyElement::List);
 
         let list_entry = unsafe {
             &mut *duckdb::ffi::duckdb_vector_get_data(output_vector)
@@ -209,19 +210,12 @@ impl<'a> ParseContext<'a> {
 
         let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(output_vector) };
 
-        let mut context = ParseContext {
-            bytes: &self.bytes,
-            parser_state: self.parser_state,
-            current_key: column_key,
-        };
-
         func(
-            &mut context,
+            self,
+            &column_key,
             child_vector,
             (next_offset + next_length - 1) as _,
-        )?;
-
-        Ok(())
+        )
     }
 }
 
@@ -229,6 +223,7 @@ pub trait ParseIntoDuckDB {
     fn parse(
         ctx: &mut ParseContext,
         row_idx: usize,
+        column_key: &ColumnKey,
         target: &impl VectorAccessor,
     ) -> anyhow::Result<()>;
 }
