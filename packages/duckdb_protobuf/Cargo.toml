@@ -3,8 +3,6 @@ name = "duckdb_protobuf"
 version = "0.1.0"
 edition = "2021"
 
-build = "build.rs"
-
 [lib]
 crate-type = ["cdylib"]
 
@@ -30,12 +28,3 @@ prost-build = "0.13.1"
 [[test]]
 name = "it"
 path = "tests/it/main.rs"
-
-
-[build-dependencies]
-glob = "0.3.1"
-prost-reflect = "0.14.0"
-quote = "1.0.36"
-proc-macro2 = "1.0.86"
-prettyplease = "0.2.20"
-syn = "2.0.70"

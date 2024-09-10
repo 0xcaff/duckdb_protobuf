@@ -1,4 +1,4 @@
-use crate::gen::{ParseContext, ParseIntoDuckDB, ParserState};
+use crate::gen::{parse_message, ParseContext, ParserState};
 use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
 use crate::read::{ColumnKey, MyFlatVector, VectorAccessor};
 use crate::types::into_logical_type;
@@ -274,7 +274,8 @@ impl ProtobufVTab {
 
             let mut ctx = ParseContext::new(bytes.as_slice(), &mut parser_state);
 
-            crate::gen::GetDreamMapResponse::parse(
+            parse_message(
+                &local_descriptor,
                 &mut ctx,
                 output_row_idx,
                 &ColumnKey::empty(),

@@ -857,15 +857,11 @@ dependencies = [
  "glob",
  "log",
  "ouroboros",
- "prettyplease",
- "proc-macro2",
  "prost",
  "prost-build",
  "prost-reflect",
  "protobuf",
- "quote",
  "strum 0.26.3",
- "syn 2.0.77",
  "thiserror",
 ]
 

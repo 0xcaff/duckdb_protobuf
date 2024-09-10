@@ -1,20 +1,19 @@
-use std::collections::hash_map::Entry;
 use crate::read::{ColumnKey, VectorAccessor};
 use crate::varint::{decode_varint, DecodeVarint, IncorrectVarintError};
 use anyhow::format_err;
+use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 use protobuf::rt::WireType;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-include!(concat!(env!("OUT_DIR"), "/generated.rs"));
-
 pub struct LocalRepeatedFieldsState {
-    state: HashMap<usize, LocalRepeatedFieldState>,
+    state: HashMap<u32, LocalRepeatedFieldState>,
 }
 
 impl LocalRepeatedFieldsState {
     pub fn new() -> LocalRepeatedFieldsState {
         LocalRepeatedFieldsState {
-            state: HashMap::new()
+            state: HashMap::new(),
         }
     }
 }
@@ -56,7 +55,7 @@ impl ParseContext<'_> {
         self.bytes = &self.bytes[n..];
     }
 
-    pub fn next(&mut self, limit: usize, field_tag: usize) -> ParseContext {
+    pub fn next(&mut self, limit: usize) -> ParseContext {
         ParseContext {
             bytes: &self.bytes[..limit],
             parser_state: self.parser_state,
@@ -185,7 +184,7 @@ impl ParseContext<'_> {
     pub fn handle_repeated_field(
         &mut self,
         local_repeated_field_state: &mut LocalRepeatedFieldsState,
-        field_idx: usize,
+        field_idx: u32,
         output_vector: duckdb::ffi::duckdb_vector,
         row_idx: usize,
         column_key: &ColumnKey,
@@ -203,9 +202,14 @@ impl ParseContext<'_> {
                 value.length += 1;
                 (value.offset, value.length)
             }
-            Entry::Vacant(..) => {
-                (self.parser_state.column_state.get(&column_key).map(|it| *it).unwrap_or_default(), 1)
-            }
+            Entry::Vacant(..) => (
+                self.parser_state
+                    .column_state
+                    .get(&column_key)
+                    .map(|it| *it)
+                    .unwrap_or_default(),
+                1,
+            ),
         };
 
         let list_entry = unsafe {
@@ -213,7 +217,6 @@ impl ParseContext<'_> {
                 .cast::<duckdb::ffi::duckdb_list_entry>()
                 .add(row_idx)
         };
-
 
         list_entry.offset = offset;
         list_entry.length = length;
@@ -224,27 +227,116 @@ impl ParseContext<'_> {
 
         let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(output_vector) };
 
-        func(
-            self,
-            &column_key,
-            child_vector,
-            (new_root_length - 1) as _,
-        )
+        func(self, &column_key, child_vector, (new_root_length - 1) as _)
     }
 
-    pub fn consume_local_fields(&mut self, column_key: &ColumnKey, local_repeated_field_state: LocalRepeatedFieldsState) {
+    pub fn consume_local_fields(
+        &mut self,
+        column_key: &ColumnKey,
+        local_repeated_field_state: LocalRepeatedFieldsState,
+    ) {
         for (field_idx, field_state) in local_repeated_field_state.state.into_iter() {
             let column_key = column_key.field(field_idx as _);
-            self.parser_state.column_state.insert(column_key, field_state.offset + field_state.length);
+            self.parser_state
+                .column_state
+                .insert(column_key, field_state.offset + field_state.length);
         }
     }
 }
 
-pub trait ParseIntoDuckDB {
-    fn parse(
-        ctx: &mut ParseContext,
-        row_idx: usize,
-        column_key: &ColumnKey,
-        target: &impl VectorAccessor,
-    ) -> anyhow::Result<()>;
+pub fn parse_message(
+    descriptor: &MessageDescriptor,
+    ctx: &mut ParseContext,
+    row_idx: usize,
+    column_key: &ColumnKey,
+    target: &impl VectorAccessor,
+) -> anyhow::Result<()> {
+    let mut local_repeated_fields_state = LocalRepeatedFieldsState::new();
+
+    while let Some(tag) = ctx.read_varint::<u32>()? {
+        let field_number = tag << 3;
+        let Some(field) = descriptor.get_field(field_number) else {
+            ctx.skip_tag(tag)?;
+            continue;
+        };
+
+        let (field_idx, _) = descriptor.fields().enumerate().find(|(a, v)| {
+            v == &field
+        }).unwrap();
+
+        let output_vector = target.get_vector(field_number as _);
+        let column_key = column_key.field(field_number);
+
+        match field.cardinality() {
+            Cardinality::Optional | Cardinality::Required => {
+                if !parse_field(ctx, row_idx, &column_key, output_vector, field.kind())? {
+                    ctx.skip_tag(tag)?;
+                }
+            }
+            Cardinality::Repeated => ctx.handle_repeated_field(
+                &mut local_repeated_fields_state,
+                field_number,
+                output_vector,
+                row_idx,
+                &column_key,
+                |ctx, column_key, output_vector, row_idx| {
+                    if !parse_field(ctx, row_idx, &column_key, output_vector, field.kind())? {
+                        ctx.skip_tag(tag)?;
+                    };
+
+                    Ok(())
+                },
+            )?,
+        }
+    }
+
+    ctx.consume_local_fields(column_key, local_repeated_fields_state);
+
+    Ok(())
+}
+
+fn parse_field(
+    ctx: &mut ParseContext,
+    row_idx: usize,
+    column_key: &ColumnKey,
+    output_vector: duckdb::ffi::duckdb_vector,
+    kind: Kind,
+) -> anyhow::Result<bool> {
+    match kind {
+        Kind::Message(message) => {
+            let target = unsafe { crate::read::StructVector::new(output_vector) };
+            let len = ctx.must_read_varint::<u64>()?;
+
+            parse_message(
+                &message,
+                &mut ctx.next(len as _),
+                row_idx,
+                &column_key,
+                &target,
+            )?;
+
+            ctx.consume(len as _);
+        }
+        Kind::String => {
+            ctx.read_string(output_vector, row_idx)?;
+        }
+        Kind::Double => {
+            ctx.read_fixed_bytes::<8>(output_vector, row_idx)?;
+        }
+        Kind::Float => {
+            ctx.read_fixed_bytes::<4>(output_vector, row_idx)?;
+        }
+        Kind::Int64 | Kind::Uint64 => {
+            ctx.read_varint_value::<u64>(output_vector, row_idx)?;
+        }
+        Kind::Int32 | Kind::Uint32 => {
+            ctx.read_varint_value::<u32>(output_vector, row_idx)?;
+        }
+        Kind::Bool => {
+            ctx.read_bool_value(output_vector, row_idx)?;
+        }
+        _ => return Ok(false),
+    };
+
+    Ok(true)
 }
