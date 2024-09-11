@@ -5,11 +5,12 @@ the standard varint delimited format or a u32 big endian delimited format.
 
 ## quick start
 
-ensure you're using duckdb 1.0.0
+ensure you're using duckdb 1.1.0 for support with the latest features. if you
+need new features on an old versions, please open an issue.
 
 ```bash
 $ duckdb -version
-v1.0.0 1f98600c2c
+v1.1.0 fa5c2fe15f
 ```
 
 start duckdb with `-unsigned` flag to allow loading unsigned libraries.

@@ -9,24 +9,27 @@ use duckdb_metadata::{pad_32, MetadataFields};
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    #[clap(short, long)]
+    #[clap(long)]
     output: PathBuf,
 
-    #[clap(short, long)]
+    #[clap(long)]
     input: PathBuf,
 
-    #[clap(short, long)]
+    #[clap(long)]
     extension_version: String,
 
-    #[clap(short, long)]
-    duckdb_version: String,
+    #[clap(long)]
+    duckdb_api_version: String,
 
     /// Full list on https://duckdb.org/docs/extensions/working_with_extensions.html#platforms
-    #[clap(short, long)]
+    #[clap(long)]
     platform: String,
 
-    #[clap(short, long, default_value = "4")]
+    #[clap(long, default_value = "4")]
     metadata_version: String,
+
+    #[clap(long, default_value = "CPP")]
+    extension_abi_type: String,
 }
 
 fn main() -> Result<()> {
@@ -34,17 +37,19 @@ fn main() -> Result<()> {
 
     let extension_version =
         pad_32(args.extension_version.as_bytes()).context("extension_version")?;
-    let duckdb_version = pad_32(args.duckdb_version.as_bytes()).context("duckdb_version")?;
+    let duckdb_api_version = pad_32(args.duckdb_api_version.as_bytes()).context("duckdb_api_version")?;
     let platform = pad_32(args.platform.as_bytes()).context("platform")?;
     let metadata_version = pad_32(args.metadata_version.as_bytes()).context("metadata_version")?;
+    let extension_abi_type =
+        pad_32(args.extension_abi_type.as_bytes()).context("extension_abi_type")?;
 
     let metadata_fields = MetadataFields {
         meta_8: [0; 32],
         meta_7: [0; 32],
         meta_6: [0; 32],
-        meta_5: [0; 32],
+        extension_abi_type,
         extension_version,
-        duckdb_version,
+        duckdb_api_version,
         platform,
         metadata_version,
         signature: [0; 256],
