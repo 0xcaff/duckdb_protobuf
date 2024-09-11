@@ -240,10 +240,12 @@ pub fn write_single_column(
                 .find(|(_, it)| it.number() == enum_value_descriptor.number())
                 .unwrap();
 
-            let logical_type =
-                unsafe { LogicalType::from(duckdb::ffi::duckdb_vector_get_column_type(column)) };
+            let column_type =
+                unsafe { duckdb::ffi::duckdb_vector_get_column_type(column) };
 
-            match logical_type.id() {
+            let logical_type = LogicalTypeId::from(unsafe { duckdb::ffi::duckdb_enum_internal_type(column_type) });
+
+            match logical_type {
                 LogicalTypeId::UTinyint => {
                     let mut vector = unsafe { MyFlatVector::<u8>::with_capacity(column, max_rows) };
                     vector.as_mut_slice()[row_idx] = idx as _;
