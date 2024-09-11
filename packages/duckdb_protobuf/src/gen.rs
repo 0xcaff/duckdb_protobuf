@@ -1,7 +1,7 @@
 use crate::read::{ColumnKey, VectorAccessor};
 use crate::varint::{decode_varint, DecodeVarint, IncorrectVarintError};
 use anyhow::format_err;
-use prost_reflect::{Cardinality, DynamicMessage, Kind, MessageDescriptor};
+use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, MessageDescriptor};
 use protobuf::rt::WireType;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -254,6 +254,12 @@ pub fn parse_message(
 ) -> anyhow::Result<()> {
     let mut local_repeated_fields_state = LocalRepeatedFieldsState::new();
 
+    let mut remaining_keys = descriptor
+        .fields()
+        .enumerate()
+        .map(|(idx, field)| (field.number(), (idx, field)))
+        .collect::<HashMap<_, _>>();
+
     while let Some(tag) = ctx.read_varint::<u32>()? {
         let field_number = tag >> 3;
         let Some(field) = descriptor.get_field(field_number) else {
@@ -264,8 +270,10 @@ pub fn parse_message(
         let (field_idx, _) = descriptor
             .fields()
             .enumerate()
-            .find(|(a, v)| v == &field)
+            .find(|(_, v)| v == &field)
             .unwrap();
+
+        remaining_keys.remove(&field_number);
 
         let output_vector = target.get_vector(field_idx);
         let column_key = column_key.field(field_number);
@@ -291,6 +299,11 @@ pub fn parse_message(
                 },
             )?,
         }
+    }
+
+    for (_field_number, (field_idx, field)) in remaining_keys.drain() {
+        let output_vector = target.get_vector(field_idx);
+        field_default_value(row_idx, output_vector, field)?;
     }
 
     ctx.consume_local_fields(column_key, local_repeated_fields_state);
@@ -396,4 +409,117 @@ fn parse_field(
     };
 
     Ok(true)
+}
+
+fn field_default_value(row_idx: usize, output_vector: duckdb::ffi::duckdb_vector, field: FieldDescriptor) -> anyhow::Result<()> {
+    match field.cardinality() {
+        Cardinality::Required | Cardinality::Optional => {
+            insert_default_value(row_idx, output_vector, field.kind())?;
+        }
+        Cardinality::Repeated => {
+            let list_entry = unsafe {
+                &mut *duckdb::ffi::duckdb_vector_get_data(output_vector)
+                    .cast::<duckdb::ffi::duckdb_list_entry>()
+                    .add(row_idx)
+            };
+
+            list_entry.offset = 0;
+            list_entry.length = 0;
+        }
+    }
+
+    Ok(())
+}
+
+fn insert_default_value(
+    row_idx: usize,
+    output_vector: duckdb::ffi::duckdb_vector,
+    kind: Kind,
+) -> anyhow::Result<()> {
+    match kind {
+        Kind::Message(message_descriptor)
+            if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
+        {
+            let value = 0;
+
+            unsafe {
+                let ptr = duckdb::ffi::duckdb_vector_get_data(output_vector)
+                    .cast::<i64>()
+                    .add(row_idx as _);
+                *ptr = value;
+            };
+        }
+        Kind::Message(message) => {
+            let validity = unsafe { duckdb::ffi::duckdb_vector_get_validity(output_vector) };
+            unsafe { duckdb::ffi::duckdb_validity_set_row_invalid(validity, row_idx as _) };
+
+            let target = unsafe { crate::read::StructVector::new(output_vector) };
+
+            for (idx, field) in message.fields().enumerate() {
+                let output_vector = target.get_vector(idx);
+                field_default_value(row_idx, output_vector, field)?;
+            }
+        }
+        Kind::Enum(descriptor) => {
+            let value_descriptor = descriptor.default_value();
+            let name = value_descriptor.name();
+
+            let name_bytes = name.as_bytes();
+
+            unsafe {
+                duckdb::ffi::duckdb_vector_assign_string_element_len(
+                    output_vector,
+                    row_idx as u64,
+                    name_bytes.as_ptr() as _,
+                    name_bytes.len() as _,
+                );
+            }
+        }
+        Kind::String => unsafe {
+            duckdb::ffi::duckdb_vector_assign_string_element_len(
+                output_vector,
+                row_idx as u64,
+                0x0 as _,
+                0,
+            );
+        },
+        Kind::Double => unsafe {
+            let value = duckdb::ffi::duckdb_vector_get_data(output_vector)
+                .cast::<f64>()
+                .add(row_idx as _);
+
+            (*value) = 0.0f64;
+        },
+        Kind::Float => unsafe {
+            let value = duckdb::ffi::duckdb_vector_get_data(output_vector)
+                .cast::<f32>()
+                .add(row_idx as _);
+
+            (*value) = 0.0f32;
+        },
+        Kind::Int64 | Kind::Uint64 => unsafe {
+            let value = duckdb::ffi::duckdb_vector_get_data(output_vector)
+                .cast::<u64>()
+                .add(row_idx as _);
+
+            (*value) = 0;
+        },
+        Kind::Int32 | Kind::Uint32 => unsafe {
+            let value = duckdb::ffi::duckdb_vector_get_data(output_vector)
+                .cast::<u32>()
+                .add(row_idx as _);
+
+            (*value) = 0;
+        },
+        Kind::Bool => unsafe {
+            let value = duckdb::ffi::duckdb_vector_get_data(output_vector)
+                .cast::<bool>()
+                .add(row_idx as _);
+
+            (*value) = false;
+        },
+        _ => {}
+    };
+
+    Ok(())
 }
