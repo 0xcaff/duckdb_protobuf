@@ -20,7 +20,7 @@ pub fn write_to_output(
     for field_idx in mappings {
         let field_idx = *field_idx as usize;
         if field_idx >= fields.len() {
-            continue
+            continue;
         }
 
         let field_descriptor = &fields[field_idx];

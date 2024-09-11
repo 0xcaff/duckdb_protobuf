@@ -286,7 +286,7 @@ impl ProtobufVTab {
                     .filter_map(|it| {
                         let it = *it as usize;
                         if it >= fields.len() {
-                            return None
+                            return None;
                         }
 
                         Some(fields[it].number())
@@ -324,7 +324,12 @@ impl ProtobufVTab {
             let mut field_offset = message.descriptor().fields().len();
 
             if parameters.include_filename {
-                if let Some((field_offset, _)) = init_data.column_indices.iter().enumerate().find(|(_, it)| (**it as usize) == (field_offset)) {
+                if let Some((field_offset, _)) = init_data
+                    .column_indices
+                    .iter()
+                    .enumerate()
+                    .find(|(_, it)| (**it as usize) == (field_offset))
+                {
                     let it = (|| -> Option<CString> {
                         let value = CString::new(path_reference.path().to_str()?).ok()?;
                         Some(value)
@@ -335,7 +340,10 @@ impl ProtobufVTab {
                     match it {
                         None => unsafe {
                             let validity = duckdb::ffi::duckdb_vector_get_validity(column);
-                            duckdb::ffi::duckdb_validity_set_row_invalid(validity, output_row_idx as _);
+                            duckdb::ffi::duckdb_validity_set_row_invalid(
+                                validity,
+                                output_row_idx as _,
+                            );
                         },
                         Some(value) => unsafe {
                             duckdb::ffi::duckdb_vector_assign_string_element(
@@ -351,7 +359,12 @@ impl ProtobufVTab {
             }
 
             if parameters.include_position {
-                if let Some((field_offset, _)) = init_data.column_indices.iter().enumerate().find(|(_, it)| (**it as usize) == (field_offset)) {
+                if let Some((field_offset, _)) = init_data
+                    .column_indices
+                    .iter()
+                    .enumerate()
+                    .find(|(_, it)| (**it as usize) == (field_offset))
+                {
                     let column = output.get_vector(field_offset);
                     let mut vector =
                         unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };
@@ -362,7 +375,12 @@ impl ProtobufVTab {
             }
 
             if parameters.include_size {
-                if let Some((field_offset, _)) = init_data.column_indices.iter().enumerate().find(|(_, it)| (**it as usize) == (field_offset)) {
+                if let Some((field_offset, _)) = init_data
+                    .column_indices
+                    .iter()
+                    .enumerate()
+                    .find(|(_, it)| (**it as usize) == (field_offset))
+                {
                     let column = output.get_vector(field_offset);
                     let mut vector =
                         unsafe { MyFlatVector::<u64>::with_capacity(column, available_chunk_size) };

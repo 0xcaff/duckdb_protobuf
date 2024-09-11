@@ -37,7 +37,8 @@ fn main() -> Result<()> {
 
     let extension_version =
         pad_32(args.extension_version.as_bytes()).context("extension_version")?;
-    let duckdb_api_version = pad_32(args.duckdb_api_version.as_bytes()).context("duckdb_api_version")?;
+    let duckdb_api_version =
+        pad_32(args.duckdb_api_version.as_bytes()).context("duckdb_api_version")?;
     let platform = pad_32(args.platform.as_bytes()).context("platform")?;
     let metadata_version = pad_32(args.metadata_version.as_bytes()).context("metadata_version")?;
     let extension_abi_type =
