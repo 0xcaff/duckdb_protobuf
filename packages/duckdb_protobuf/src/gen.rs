@@ -118,10 +118,11 @@ impl ParseContext<'_> {
         let len = self.must_read_varint::<u64>()? as usize;
 
         unsafe {
-            duckdb::ffi::duckdb_vector_assign_string_element(
+            duckdb::ffi::duckdb_vector_assign_string_element_len(
                 output_vector,
                 row_idx as u64,
                 self.bytes[..len].as_ptr() as _,
+                len as _
             );
         };
 
@@ -254,7 +255,7 @@ pub fn parse_message(
     let mut local_repeated_fields_state = LocalRepeatedFieldsState::new();
 
     while let Some(tag) = ctx.read_varint::<u32>()? {
-        let field_number = tag << 3;
+        let field_number = tag >> 3;
         let Some(field) = descriptor.get_field(field_number) else {
             ctx.skip_tag(tag)?;
             continue;
@@ -264,7 +265,7 @@ pub fn parse_message(
             v == &field
         }).unwrap();
 
-        let output_vector = target.get_vector(field_number as _);
+        let output_vector = target.get_vector(field_idx);
         let column_key = column_key.field(field_number);
 
         match field.cardinality() {
