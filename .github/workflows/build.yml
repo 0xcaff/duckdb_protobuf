@@ -44,7 +44,8 @@ jobs:
           --input target/${{ matrix.target }}/release/${{ matrix.library_output }}
           --output target/${{ matrix.target }}/release/protobuf.duckdb_extension
           --extension-version v0.0.1
-          --duckdb-version v1.0.0
+          --duckdb-api-version v0.0.1
+          --extension-abi-type C_STRUCT
           --platform ${{ matrix.duckdb_platform }}
 
       - name: save artifacts
@@ -76,17 +77,17 @@ jobs:
           aws s3 cp \
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
             ./release/protobuf.osx_arm64.duckdb_extension \
-            s3://duckdb-extensions/v1.0.0/osx_arm64/protobuf.duckdb_extension
+            s3://duckdb-extensions/v1.1.0/osx_arm64/protobuf.duckdb_extension
 
           aws s3 cp \
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
             ./release/protobuf.linux_amd64_gcc4.duckdb_extension \
-            s3://duckdb-extensions/v1.0.0/linux_amd64_gcc4/protobuf.duckdb_extension
+            s3://duckdb-extensions/v1.1.0/linux_amd64_gcc4/protobuf.duckdb_extension
 
           aws s3 cp \
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
             ./release/protobuf.windows_amd64.duckdb_extension \
-            s3://duckdb-extensions/v1.0.0/windows_amd64/protobuf.duckdb_extension
+            s3://duckdb-extensions/v1.1.0/windows_amd64/protobuf.duckdb_extension
 
       - name: release
         uses: softprops/action-gh-release@v2
