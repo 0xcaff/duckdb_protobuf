@@ -18,8 +18,13 @@ pub fn write_to_output(
     let column_key = &ColumnKey::empty();
     let fields = value.descriptor().fields().collect::<Vec<_>>();
     for field_idx in mappings {
-        let field_descriptor = &fields[*field_idx as usize];
-        let column_vector = output.get_vector(*field_idx as _);
+        let field_idx = *field_idx as usize;
+        if field_idx >= fields.len() {
+            continue
+        }
+
+        let field_descriptor = &fields[field_idx];
+        let column_vector = output.get_vector(field_idx);
         let value = value.get_field(&field_descriptor);
 
         let column_key = column_key.field(&field_descriptor);
