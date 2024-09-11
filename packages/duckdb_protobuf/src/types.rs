@@ -29,8 +29,7 @@ fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, anyh
 
             LogicalType::struct_type(fields.as_slice())
         }
-        // todo: turn this back on
-        // Kind::Enum(..) => LogicalType::new(LogicalTypeId::Varchar),
+        Kind::Enum(..) => LogicalType::new(LogicalTypeId::Varchar),
         Kind::Double => LogicalType::new(LogicalTypeId::Double),
         Kind::Float => LogicalType::new(LogicalTypeId::Float),
         Kind::Int32 => LogicalType::new(LogicalTypeId::Integer),

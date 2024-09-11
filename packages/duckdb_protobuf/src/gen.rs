@@ -122,7 +122,7 @@ impl ParseContext<'_> {
                 output_vector,
                 row_idx as u64,
                 self.bytes[..len].as_ptr() as _,
-                len as _
+                len as _,
             );
         };
 
@@ -261,9 +261,11 @@ pub fn parse_message(
             continue;
         };
 
-        let (field_idx, _) = descriptor.fields().enumerate().find(|(a, v)| {
-            v == &field
-        }).unwrap();
+        let (field_idx, _) = descriptor
+            .fields()
+            .enumerate()
+            .find(|(a, v)| v == &field)
+            .unwrap();
 
         let output_vector = target.get_vector(field_idx);
         let column_key = column_key.field(field_number);
@@ -317,6 +319,26 @@ fn parse_field(
             )?;
 
             ctx.consume(len as _);
+        }
+        Kind::Enum(descriptor) => {
+            let value = ctx.must_read_varint::<u32>()? as i32;
+
+            let value_descriptor = descriptor
+                .get_value(value)
+                .unwrap_or_else(|| descriptor.default_value());
+
+            let name = value_descriptor.name();
+
+            let name_bytes = name.as_bytes();
+
+            unsafe {
+                duckdb::ffi::duckdb_vector_assign_string_element_len(
+                    output_vector,
+                    row_idx as u64,
+                    name_bytes.as_ptr() as _,
+                    name_bytes.len() as _,
+                );
+            }
         }
         Kind::String => {
             ctx.read_string(output_vector, row_idx)?;
