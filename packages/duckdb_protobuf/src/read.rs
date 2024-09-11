@@ -8,20 +8,34 @@ use duckdb::vtab::DataChunk;
 use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 
 pub fn write_to_output(
+    mappings: &[u64],
     columns_state: &mut HashMap<ColumnKey, u64>,
     value: &DynamicMessage,
     output: &DataChunk,
     max_rows: usize,
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
-    write_message(
-        columns_state,
-        &ColumnKey::empty(),
-        value,
-        output,
-        max_rows,
-        row_idx,
-    )
+    let column_key = &ColumnKey::empty();
+    let fields = value.descriptor().fields().collect::<Vec<_>>();
+    for field_idx in mappings {
+        let field_descriptor = &fields[*field_idx as usize];
+        let column_vector = output.get_vector(*field_idx as _);
+        let value = value.get_field(&field_descriptor);
+
+        let column_key = column_key.field(&field_descriptor);
+
+        write_column(
+            columns_state,
+            &column_key,
+            &value,
+            &field_descriptor,
+            column_vector,
+            max_rows,
+            row_idx,
+        )?;
+    }
+
+    Ok(())
 }
 
 pub fn write_message(

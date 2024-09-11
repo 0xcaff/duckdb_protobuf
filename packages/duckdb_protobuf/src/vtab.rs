@@ -1,9 +1,14 @@
+use crate::filtered_dynamic_message::FilteredDynamicMessage;
+use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
+use crate::read::{write_to_output, MyFlatVector, VectorAccessor};
+use crate::types::into_logical_type;
 use anyhow::{format_err, Context};
 use crossbeam::queue::ArrayQueue;
 use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
     VTabLocalData,
 };
+use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, ReflectMessage};
 use std::error::Error;
 use std::ffi::CString;
@@ -11,10 +16,6 @@ use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-
-use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
-use crate::read::{write_to_output, MyFlatVector, VectorAccessor};
-use crate::types::into_logical_type;
 
 pub struct Parameters {
     pub files: String,
@@ -135,10 +136,14 @@ impl Parameters {
 }
 pub struct GlobalState {
     queue: ArrayQueue<PathBuf>,
+    column_indices: Vec<duckdb::ffi::idx_t>,
 }
 
 impl GlobalState {
-    pub fn new(params: &Parameters) -> Result<GlobalState, anyhow::Error> {
+    pub fn new(
+        params: &Parameters,
+        column_indices: Vec<duckdb::ffi::idx_t>,
+    ) -> Result<GlobalState, anyhow::Error> {
         let tasks = {
             let mut tasks = vec![];
             let items = glob::glob(params.files.as_str())?;
@@ -160,7 +165,10 @@ impl GlobalState {
             queue
         };
 
-        Ok(GlobalState { queue })
+        Ok(GlobalState {
+            queue,
+            column_indices,
+        })
     }
 }
 
@@ -193,6 +201,10 @@ impl VTab for ProtobufVTab {
 
     fn named_parameters() -> Option<Vec<(String, LogicalType)>> {
         Some(Parameters::values())
+    }
+
+    fn supports_pushdown() -> bool {
+        true
     }
 }
 
@@ -232,8 +244,9 @@ impl ProtobufVTab {
     ) -> Result<(), anyhow::Error> {
         let data = unsafe { &mut *data };
         let bind_data = unsafe { &*init_info.get_bind_data::<<Self as VTab>::BindData>() };
+        let column_indices = init_info.get_column_indices();
 
-        let new_global_state = GlobalState::new(bind_data)?;
+        let new_global_state = GlobalState::new(bind_data, column_indices)?;
         init_info.set_max_threads(new_global_state.queue.len() as _);
         data.assign(new_global_state);
 
@@ -261,6 +274,22 @@ impl ProtobufVTab {
 
         let mut column_information = Default::default();
 
+        let message = {
+            let message = DynamicMessage::new(local_descriptor.clone());
+            let fields: Vec<_> = local_descriptor.fields().collect();
+
+            let message = FilteredDynamicMessage::new(
+                message,
+                init_data
+                    .column_indices
+                    .iter()
+                    .map(|it| fields[*it as usize].number())
+                    .collect(),
+            );
+
+            message
+        };
+
         for output_row_idx in 0..available_chunk_size {
             let StateContainerValue {
                 path_reference,
@@ -272,9 +301,12 @@ impl ProtobufVTab {
                 Some(message_info) => message_info,
             };
 
-            let message = DynamicMessage::decode(local_descriptor.clone(), bytes.as_slice())?;
+            let mut message = message.clone();
+            message.merge(bytes.as_slice())?;
+            let message = message.into();
 
             write_to_output(
+                &init_data.column_indices,
                 &mut column_information,
                 &message,
                 output,
