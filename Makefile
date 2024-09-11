@@ -5,7 +5,7 @@
 
 DUCKDB_PLATFORM := osx_arm64
 DUCKDB_EXTENSION_VERSION := v0.0.1
-DUCKDB_VERSION := v0.0.1
+DUCKDB_API_VERSION := v0.0.1
 
 ifeq ($(DUCKDB_PLATFORM),windows_amd64)
 	LIBRARY_OUTPUT := duckdb_protobuf.dll
@@ -43,7 +43,7 @@ debug: vendor
 		--input target/debug/$(LIBRARY_OUTPUT) \
 		--output target/debug/protobuf.duckdb_extension \
 		--extension-version $(DUCKDB_EXTENSION_VERSION) \
-		--duckdb-version $(DUCKDB_VERSION) \
+		--duckdb-api-version $(DUCKDB_API_VERSION) \
 		--platform $(DUCKDB_PLATFORM) \
 		--extension-abi-type C_STRUCT
 
@@ -56,7 +56,7 @@ release: vendor
 		--input target/release/$(LIBRARY_OUTPUT) \
 		--output target/release/protobuf.duckdb_extension \
 		--extension-version $(DUCKDB_EXTENSION_VERSION) \
-		--duckdb-version $(DUCKDB_VERSION) \
+		--duckdb-api-version $(DUCKDB_API_VERSION) \
 		--platform $(DUCKDB_PLATFORM) \
 		--extension-abi-type C_STRUCT
 

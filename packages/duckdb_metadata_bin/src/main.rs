@@ -19,7 +19,7 @@ struct Args {
     extension_version: String,
 
     #[clap(long)]
-    duckdb_version: String,
+    duckdb_api_version: String,
 
     /// Full list on https://duckdb.org/docs/extensions/working_with_extensions.html#platforms
     #[clap(long)]
@@ -37,7 +37,7 @@ fn main() -> Result<()> {
 
     let extension_version =
         pad_32(args.extension_version.as_bytes()).context("extension_version")?;
-    let duckdb_version = pad_32(args.duckdb_version.as_bytes()).context("duckdb_version")?;
+    let duckdb_api_version = pad_32(args.duckdb_api_version.as_bytes()).context("duckdb_api_version")?;
     let platform = pad_32(args.platform.as_bytes()).context("platform")?;
     let metadata_version = pad_32(args.metadata_version.as_bytes()).context("metadata_version")?;
     let extension_abi_type =
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         meta_6: [0; 32],
         extension_abi_type,
         extension_version,
-        duckdb_version,
+        duckdb_api_version,
         platform,
         metadata_version,
         signature: [0; 256],
