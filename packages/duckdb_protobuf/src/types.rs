@@ -11,12 +11,11 @@ pub fn into_logical_type(field: &FieldDescriptor) -> Result<LogicalType, anyhow:
 
 fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, anyhow::Error> {
     let value = match field.kind() {
-        // todo: turn this back on
-        // Kind::Message(message_descriptor)
-        //     if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
-        // {
-        //     LogicalType::new(LogicalTypeId::Timestamp)
-        // }
+        Kind::Message(message_descriptor)
+            if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
+        {
+            LogicalType::new(LogicalTypeId::Timestamp)
+        }
         Kind::Message(message_descriptor) => {
             let fields = message_descriptor
                 .fields()

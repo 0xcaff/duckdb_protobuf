@@ -1,7 +1,7 @@
 use crate::read::{ColumnKey, VectorAccessor};
 use crate::varint::{decode_varint, DecodeVarint, IncorrectVarintError};
 use anyhow::format_err;
-use prost_reflect::{Cardinality, Kind, MessageDescriptor};
+use prost_reflect::{Cardinality, DynamicMessage, Kind, MessageDescriptor};
 use protobuf::rt::WireType;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -306,6 +306,40 @@ fn parse_field(
     kind: Kind,
 ) -> anyhow::Result<bool> {
     match kind {
+        Kind::Message(message_descriptor)
+            if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
+        {
+            let len = ctx.must_read_varint::<u64>()? as usize;
+
+            let message = DynamicMessage::decode(message_descriptor.clone(), &ctx.bytes[..len])?;
+
+            let seconds =
+                message
+                    .get_field(&message_descriptor.get_field(1).ok_or_else(|| {
+                        format_err!("expected field 1 for google.protobuf.Timestamp")
+                    })?)
+                    .as_i64()
+                    .ok_or_else(|| format_err!("expected i64"))?;
+
+            let nanos =
+                message
+                    .get_field(&message_descriptor.get_field(2).ok_or_else(|| {
+                        format_err!("expected field 2 for google.protobuf.Timestamp")
+                    })?)
+                    .as_i32()
+                    .ok_or_else(|| format_err!("expected i32"))?;
+
+            let value = seconds * 1000000 + (nanos as i64 / 1000);
+
+            unsafe {
+                let ptr = duckdb::ffi::duckdb_vector_get_data(output_vector)
+                    .cast::<i64>()
+                    .add(row_idx as _);
+                *ptr = value;
+            };
+
+            ctx.consume(len);
+        }
         Kind::Message(message) => {
             let target = unsafe { crate::read::StructVector::new(output_vector) };
             let len = ctx.must_read_varint::<u64>()?;
