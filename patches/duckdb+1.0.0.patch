@@ -1,3 +1,46 @@
+diff -ru packages/vendor/duckdb/Cargo.toml packages/vendor/duckdb/Cargo.toml
+--- a/Cargo.toml	1969-12-31 18:00:01
++++ b/Cargo.toml	2024-09-04 22:01:14
+@@ -170,18 +170,10 @@
+
+ [features]
+ appender-arrow = ["vtab-arrow"]
+-buildtime_bindgen = ["libduckdb-sys/buildtime_bindgen"]
+-bundled = ["libduckdb-sys/bundled"]
+ default = []
+ extensions-full = [
+-    "json",
+-    "parquet",
+     "vtab-full",
+ ]
+-json = [
+-    "libduckdb-sys/json",
+-    "bundled",
+-]
+ modern-full = [
+     "chrono",
+     "serde_json",
+@@ -190,10 +182,6 @@
+     "uuid",
+     "polars",
+ ]
+-parquet = [
+-    "libduckdb-sys/parquet",
+-    "bundled",
+-]
+ polars = ["dep:polars"]
+ vtab = []
+ vtab-arrow = [
+@@ -212,4 +200,7 @@
+ vtab-loadable = [
+     "vtab",
+     "duckdb-loadable-macros",
+-]
++]
++loadable_extension = [
++    "libduckdb-sys/loadable_extension"
++]
+\ No newline at end of file
 diff -ruN packages/vendor/duckdb/src/vtab/mod.rs packages/vendor/duckdb/src/vtab/mod.rs
 --- a/src/vtab/mod.rs	2006-07-23 20:21:28
 +++ b/src/vtab/mod.rs	2024-09-05 12:58:13
