@@ -103,6 +103,9 @@ streams with little upfront load complexity or time.
 
 * converts `google.protobuf.Timestamp` messages to duckdb timestamp
 * supports nested messages with repeating fields
+* scales decoding across as many threads as duckdb allows
+* supports projection pushdown (for first level of columns) ensuring only
+  necessary columns are decoded.
 
 ## limitations
 
