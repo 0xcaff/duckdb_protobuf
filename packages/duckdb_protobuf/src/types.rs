@@ -28,7 +28,11 @@ fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, anyh
 
             LogicalType::struct_type(fields.as_slice())
         }
-        Kind::Enum(..) => LogicalType::new(LogicalTypeId::Varchar),
+        Kind::Enum(descriptor) => {
+            let names = descriptor.values().collect::<Vec<_>>();
+            let names = names.iter().map(|it| it.name()).collect::<Vec<_>>();
+            LogicalType::enumeration(names.as_slice())
+        }
         Kind::Double => LogicalType::new(LogicalTypeId::Double),
         Kind::Float => LogicalType::new(LogicalTypeId::Float),
         Kind::Int32 => LogicalType::new(LogicalTypeId::Integer),

@@ -1,6 +1,6 @@
-diff -ru packages/vendor/duckdb/Cargo.toml packages/vendor/duckdb/Cargo.toml
+diff -ruN packages/vendor/duckdb/Cargo.toml packages/vendor/duckdb/Cargo.toml
 --- a/Cargo.toml	1969-12-31 18:00:01
-+++ b/Cargo.toml	2024-09-04 22:01:14
++++ b/Cargo.toml	2024-09-11 01:33:53
 @@ -170,18 +170,10 @@
 
  [features]
@@ -41,9 +41,40 @@ diff -ru packages/vendor/duckdb/Cargo.toml packages/vendor/duckdb/Cargo.toml
 +    "libduckdb-sys/loadable_extension"
 +]
 \ No newline at end of file
+diff -ruN packages/vendor/duckdb/src/vtab/logical_type.rs packages/vendor/duckdb/src/vtab/logical_type.rs
+--- a/src/vtab/logical_type.rs	2006-07-23 20:21:28
++++ b/src/vtab/logical_type.rs	2024-09-11 11:55:25
+@@ -164,6 +164,27 @@
+         }
+     }
+ 
++    pub fn enumeration(names: &[&str]) -> Self {
++        let strings: Vec<CString> = names
++            .iter()
++            .map(|s| CString::new(*s).unwrap())
++            .collect();
++
++        let mut pointers: Vec<*const ::std::os::raw::c_char> = strings
++            .iter()
++            .map(|cstr| cstr.as_ptr())
++            .collect();
++
++        unsafe {
++            Self {
++                ptr: duckdb_create_enum_type(
++                    pointers.as_mut_ptr(),
++                    names.len() as _,
++                )
++            }
++        }
++    }
++
+     /// Creates a map type from its child type.
+     pub fn map(key: &LogicalType, value: &LogicalType) -> Self {
+         unsafe {
 diff -ruN packages/vendor/duckdb/src/vtab/mod.rs packages/vendor/duckdb/src/vtab/mod.rs
 --- a/src/vtab/mod.rs	2006-07-23 20:21:28
-+++ b/src/vtab/mod.rs	2024-09-05 12:58:13
++++ b/src/vtab/mod.rs	2024-09-11 01:33:53
 @@ -148,6 +148,19 @@
      }
  }

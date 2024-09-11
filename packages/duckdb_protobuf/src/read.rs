@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::slice;
 
 use anyhow::{bail, format_err};
-use duckdb::vtab::DataChunk;
+use duckdb::vtab::{DataChunk, LogicalType, LogicalTypeId};
 use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 
 pub fn write_to_output(
@@ -233,15 +233,35 @@ pub fn write_single_column(
             let enum_value_descriptor = enum_descriptor
                 .get_value(enum_value)
                 .unwrap_or_else(|| enum_descriptor.default_value());
-            let name = CString::new(enum_value_descriptor.name())?;
 
-            unsafe {
-                duckdb::ffi::duckdb_vector_assign_string_element(
-                    column,
-                    row_idx as u64,
-                    name.as_ptr(),
-                )
-            };
+            let (idx, _) = enum_descriptor
+                .values()
+                .enumerate()
+                .find(|(_, it)| it.number() == enum_value_descriptor.number())
+                .unwrap();
+
+            let column_type =
+                unsafe { duckdb::ffi::duckdb_vector_get_column_type(column) };
+
+            let logical_type = LogicalTypeId::from(unsafe { duckdb::ffi::duckdb_enum_internal_type(column_type) });
+
+            match logical_type {
+                LogicalTypeId::UTinyint => {
+                    let mut vector = unsafe { MyFlatVector::<u8>::with_capacity(column, max_rows) };
+                    vector.as_mut_slice()[row_idx] = idx as _;
+                }
+                LogicalTypeId::USmallint => {
+                    let mut vector =
+                        unsafe { MyFlatVector::<u16>::with_capacity(column, max_rows) };
+                    vector.as_mut_slice()[row_idx] = idx as _;
+                }
+                LogicalTypeId::UInteger => {
+                    let mut vector =
+                        unsafe { MyFlatVector::<u32>::with_capacity(column, max_rows) };
+                    vector.as_mut_slice()[row_idx] = idx as _;
+                }
+                _ => bail!("unknown enum column type {:?}", logical_type),
+            }
         }
         Kind::String => {
             let value = value
