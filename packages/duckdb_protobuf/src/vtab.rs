@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::ptr::null_mut;
 
 pub struct Parameters {
     pub files: String,
@@ -211,6 +212,7 @@ impl VTab for ProtobufVTab {
 impl ProtobufVTab {
     fn bind(bind: &BindInfo, data: *mut <Self as VTab>::BindData) -> Result<(), anyhow::Error> {
         let data = unsafe { &mut *data };
+        data.init();
 
         let params = Parameters::from_bind_info(bind)?;
 
@@ -243,6 +245,8 @@ impl ProtobufVTab {
         data: *mut <Self as VTab>::InitData,
     ) -> Result<(), anyhow::Error> {
         let data = unsafe { &mut *data };
+        data.init();
+
         let bind_data = unsafe { &*init_info.get_bind_data::<<Self as VTab>::BindData>() };
         let column_indices = init_info.get_column_indices();
 
@@ -500,10 +504,11 @@ impl VTabLocalData for ProtobufVTab {
         let local_descriptor = bind_data.message_descriptor()?;
 
         let data = unsafe { &mut *data };
+        data.init();
 
         data.assign(LocalState {
             current: None,
-            local_descriptor: local_descriptor,
+            local_descriptor,
         });
 
         Ok(())
@@ -518,6 +523,9 @@ pub struct Handle<T> {
 impl<T> Handle<T> {
     pub fn assign(&mut self, inner: T) {
         self.inner = Box::into_raw(Box::new(inner));
+    }
+    pub fn init(&mut self) {
+        self.inner = null_mut();
     }
 }
 
