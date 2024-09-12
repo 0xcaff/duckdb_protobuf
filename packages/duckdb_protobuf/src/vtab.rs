@@ -156,6 +156,10 @@ impl GlobalState {
             tasks
         };
 
+        if tasks.is_empty() {
+            return Err(format_err!("no files matching glob found {}", params.files));
+        }
+
         let queue = {
             let queue = ArrayQueue::new(tasks.len());
 
