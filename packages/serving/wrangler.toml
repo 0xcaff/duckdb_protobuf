@@ -7,3 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "duckdb-extensions"
+
+[[routes]]
+pattern = "duckdb.0xcaff.xyz"
+custom_domain = true
