@@ -12,7 +12,9 @@ export default class extends WorkerEntrypoint<Env> {
     const url = new URL(request.url);
 
     const pathSegments = url.pathname.split("/");
-    const requestedVersion = pathSegments.shift();
+    pathSegments.shift();
+
+    const requestedVersion = pathSegments.slice().shift();
     if (!requestedVersion) {
       return new Response("not found", { status: 404 });
     }
@@ -26,7 +28,9 @@ export default class extends WorkerEntrypoint<Env> {
 
     const apiVersion = releaseMapping.apiVersion;
 
-    const path = ['duckdb-api-version', apiVersion].concat(pathSegments).join("/");
+    const path = ["duckdb-api-version", apiVersion]
+      .concat(pathSegments.slice(1))
+      .join("/");
 
     const object = await this.env.BUCKET.get(path);
     if (!object) {
