@@ -25,6 +25,10 @@ jobs:
               target: x86_64-unknown-linux-gnu
               library_output: libduckdb_protobuf.so
               duckdb_platform: linux_amd64_gcc4
+            - platform: ubuntu-latest
+              target: x86_64-unknown-linux-gnu
+              library_output: libduckdb_protobuf.so
+              duckdb_platform: linux_amd64
 
     runs-on: ${{ matrix.platform }}
 
@@ -66,6 +70,7 @@ jobs:
           mkdir release
           mv build-macos-latest-aarch64-apple-darwin/protobuf.duckdb_extension ./release/protobuf.osx_arm64.duckdb_extension
           mv build-ubuntu-latest-x86_64-unknown-linux-gnu/protobuf.duckdb_extension ./release/protobuf.linux_amd64_gcc4.duckdb_extension
+          mv build-ubuntu-latest-x86_64-unknown-linux-gnu/protobuf.duckdb_extension ./release/protobuf.linux_amd64.duckdb_extension
           mv build-windows-latest-x86_64-pc-windows-msvc/protobuf.duckdb_extension ./release/protobuf.windows_amd64.duckdb_extension
 
       - name: upload files to r2
@@ -83,6 +88,11 @@ jobs:
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
             ./release/protobuf.linux_amd64_gcc4.duckdb_extension \
             s3://duckdb-extensions/duckdb-api-version/v0.0.1/linux_amd64_gcc4/protobuf.duckdb_extension
+          
+          aws s3 cp \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            ./release/protobuf.linux_amd64.duckdb_extension \
+            s3://duckdb-extensions/duckdb-api-version/v0.0.1/linux_amd64/protobuf.duckdb_extension
 
           aws s3 cp \
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
