@@ -1,22 +1,24 @@
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::slice;
 
 use anyhow::{bail, format_err};
-use duckdb::vtab::{DataChunk, LogicalType, LogicalTypeId};
-use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
+use duckdb::vtab::{DataChunk, LogicalTypeId};
+use protobuf::reflect::{FieldDescriptor, ReflectFieldRef, ReflectOptionalRef, ReflectValueRef};
+use protobuf::MessageDyn;
 
 pub fn write_to_output(
     mappings: &[u64],
     columns_state: &mut HashMap<ColumnKey, u64>,
-    value: &DynamicMessage,
+    value: &dyn MessageDyn,
     output: &DataChunk,
     max_rows: usize,
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
     let column_key = &ColumnKey::empty();
-    let fields = value.descriptor().fields().collect::<Vec<_>>();
+    let message_descriptor = value.descriptor_dyn();
+    let fields: Vec<FieldDescriptor> = message_descriptor.fields().collect();
     for (output_field_idx, field_idx) in mappings.iter().enumerate() {
         let field_idx = *field_idx as usize;
         if field_idx >= fields.len() {
@@ -25,14 +27,14 @@ pub fn write_to_output(
 
         let field_descriptor = &fields[field_idx];
         let column_vector = output.get_vector(output_field_idx);
-        let value = value.get_field(&field_descriptor);
+        let field_ref = field_descriptor.get_reflect(value);
 
         let column_key = column_key.field(&field_descriptor);
 
         write_column(
             columns_state,
             &column_key,
-            &value,
+            &field_ref,
             &field_descriptor,
             column_vector,
             max_rows,
@@ -46,21 +48,22 @@ pub fn write_to_output(
 pub fn write_message(
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
-    value: &DynamicMessage,
+    value: &dyn MessageDyn,
     output: &impl VectorAccessor,
     max_rows: usize,
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
-    for (field_idx, field_descriptor) in value.descriptor().fields().enumerate() {
+    let message_descriptor = value.descriptor_dyn();
+    for (field_idx, field_descriptor) in message_descriptor.fields().enumerate() {
         let column_vector = output.get_vector(field_idx);
-        let value = value.get_field(&field_descriptor);
+        let field_ref = field_descriptor.get_reflect(value);
 
         let column_key = column_key.field(&field_descriptor);
 
         write_column(
             columns_state,
             &column_key,
-            &value,
+            &field_ref,
             &field_descriptor,
             column_vector,
             max_rows,
@@ -98,24 +101,20 @@ impl<T> MyFlatVector<T> {
 pub fn write_column(
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
-    value: &Value,
+    field_ref: &ReflectFieldRef,
     field_descriptor: &FieldDescriptor,
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
-    match field_descriptor.cardinality() {
-        Cardinality::Repeated => {
+    match field_ref {
+        ReflectFieldRef::Repeated(values) => {
             let column_key = column_key.extending(ColumnKeyElement::List);
 
             let mut list_entries_vector = unsafe {
                 MyFlatVector::<duckdb::ffi::duckdb_list_entry>::with_capacity(column, max_rows)
             };
             let list_entry = &mut list_entries_vector.as_mut_slice()[row_idx];
-
-            let values = value
-                .as_list()
-                .ok_or_else(|| format_err!("expected list"))?;
 
             let next_offset_ref = columns_state.get_mut(&column_key);
             let next_offset = if let Some(it) = &next_offset_ref {
@@ -144,13 +143,13 @@ pub fn write_column(
 
             let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(column) };
 
-            for (idx, value) in values.iter().enumerate() {
+            for (idx, value) in values.into_iter().enumerate() {
                 let row_idx = next_offset as usize + idx;
 
                 write_single_column(
                     columns_state,
                     &column_key,
-                    value,
+                    &ReflectOptionalRef::some(value),
                     field_descriptor,
                     child_vector,
                     new_length as usize,
@@ -158,7 +157,7 @@ pub fn write_column(
                 )?;
             }
         }
-        Cardinality::Optional | Cardinality::Required => {
+        ReflectFieldRef::Optional(value) => {
             write_single_column(
                 columns_state,
                 column_key,
@@ -169,6 +168,7 @@ pub fn write_column(
                 row_idx,
             )?;
         }
+        _ => return Err(format_err!("unknown type")),
     }
 
     Ok(())
@@ -177,68 +177,59 @@ pub fn write_column(
 pub fn write_single_column(
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
-    value: &Value,
+    value: &ReflectOptionalRef,
     field_descriptor: &FieldDescriptor,
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
-    match field_descriptor.kind() {
-        Kind::Message(message_descriptor)
-            if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
-        {
-            let message = value
-                .as_message()
-                .ok_or_else(|| format_err!("expected message"))?;
+    let Some(value) = &value.value() else {
+        // todo: implement
+        return Err(format_err!("optional types not supported yet"));
+    };
+
+    match value {
+        ReflectValueRef::Message(message_value) if message_value.descriptor_dyn().full_name() == "google.protobuf.Timestamp" => {
+            let message_descriptor_dyn = message_value.descriptor_dyn();
+            
             let seconds =
-                message
-                    .get_field(&message_descriptor.get_field(1).ok_or_else(|| {
+                message_descriptor_dyn
+                    .field_by_number(1)
+                    .ok_or_else(|| {
                         format_err!("expected field 1 for google.protobuf.Timestamp")
-                    })?)
-                    .as_i64()
+                    })?
+                    .get_singular_field_or_default(message_value.deref())
+                    .to_i64()
                     .ok_or_else(|| format_err!("expected i64"))?;
 
             let nanos =
-                message
-                    .get_field(&message_descriptor.get_field(2).ok_or_else(|| {
+                message_descriptor_dyn
+                    .field_by_number(2)
+                    .ok_or_else(|| {
                         format_err!("expected field 2 for google.protobuf.Timestamp")
-                    })?)
-                    .as_i32()
-                    .ok_or_else(|| format_err!("expected i32"))?;
+                    })?
+                    .get_singular_field_or_default(message_value.deref())
+                    .to_i32()
+                    .ok_or_else(|| format_err!("expected i64"))?;
 
             let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
             vector.as_mut_slice()[row_idx] = seconds * 1000000 + (nanos as i64 / 1000);
         }
-        Kind::Message(..) => {
-            let message = value
-                .as_message()
-                .ok_or_else(|| format_err!("expected message"))?;
-
+        ReflectValueRef::Message(message_value) => {
             let source = unsafe { StructVector::new(column) };
 
             write_message(
                 columns_state,
                 column_key,
-                message,
+                message_value.deref(),
                 &source,
                 max_rows,
                 row_idx,
             )?;
         }
-        Kind::Enum(enum_descriptor) => {
-            let enum_value = value
-                .as_enum_number()
-                .ok_or_else(|| format_err!("expected enum value"))?;
-
-            let enum_value_descriptor = enum_descriptor
-                .get_value(enum_value)
-                .unwrap_or_else(|| enum_descriptor.default_value());
-
-            let (idx, _) = enum_descriptor
-                .values()
-                .enumerate()
-                .find(|(_, it)| it.number() == enum_value_descriptor.number())
-                .unwrap();
+        ReflectValueRef::Enum(enum_descriptor, value) => {
+            let enum_value_descriptor = enum_descriptor.value_by_number_or_default(*value);
+            let idx = enum_value_descriptor.value();
 
             let column_type =
                 unsafe { duckdb::ffi::duckdb_vector_get_column_type(column) };
@@ -263,73 +254,57 @@ pub fn write_single_column(
                 _ => bail!("unknown enum column type {:?}", logical_type),
             }
         }
-        Kind::String => {
-            let value = value
-                .as_str()
-                .ok_or_else(|| format_err!("expected string"))?;
-            let value = CString::new(value)?;
+        ReflectValueRef::U32(value) => {
+            let mut vector = unsafe { MyFlatVector::<u32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = *value;
+        }
+        ReflectValueRef::U64(value) => {
+            let mut vector = unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = *value;
+        }
+        ReflectValueRef::I32(value) => {
+            let mut vector = unsafe { MyFlatVector::<i32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = *value;
+        }
+        ReflectValueRef::I64(value) => {
+            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = *value;
+        }
+        ReflectValueRef::F32(value) => {
+            let mut vector = unsafe { MyFlatVector::<f32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = *value;
+        }
+        ReflectValueRef::F64(value) => {
+            let mut vector = unsafe { MyFlatVector::<f64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = *value;
+        }
+        ReflectValueRef::Bool(value) => {
+            let mut vector = unsafe { MyFlatVector::<bool>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = *value;
+        }
+        ReflectValueRef::String(value) => {
+            let value = value.as_bytes();
 
             unsafe {
-                duckdb::ffi::duckdb_vector_assign_string_element(
+                duckdb::ffi::duckdb_vector_assign_string_element_len(
                     column,
                     row_idx as u64,
-                    value.as_ptr(),
+                    value.as_ptr() as _,
+                    value.len() as _,
                 )
             };
         }
-        Kind::Double => {
-            let value = value
-                .as_f64()
-                .ok_or_else(|| format_err!("expected double"))?;
-            let mut vector = unsafe { MyFlatVector::<f64>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
+        ReflectValueRef::Bytes(value) => {
+            unsafe {
+                duckdb::ffi::duckdb_vector_assign_string_element_len(
+                    column,
+                    row_idx as u64,
+                    value.as_ptr() as _,
+                    value.len() as _,
+                )
+            };
         }
-        Kind::Float => {
-            let value = value
-                .as_f32()
-                .ok_or_else(|| format_err!("expected float"))?;
-            let mut vector = unsafe { MyFlatVector::<f32>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Int32 => {
-            let value = value
-                .as_i32()
-                .ok_or_else(|| format_err!("expected int32"))?;
-            let mut vector = unsafe { MyFlatVector::<i32>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Int64 => {
-            let value = value
-                .as_i64()
-                .ok_or_else(|| format_err!("expected int64"))?;
-            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Uint32 => {
-            let value = value
-                .as_u32()
-                .ok_or_else(|| format_err!("expected uint32"))?;
-            let mut vector = unsafe { MyFlatVector::<u32>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Uint64 => {
-            let value = value
-                .as_u64()
-                .ok_or_else(|| format_err!("expected uint64"))?;
-            let mut vector = unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Bool => {
-            let value = value
-                .as_bool()
-                .ok_or_else(|| format_err!("expected bool"))?;
-            let mut vector = unsafe { MyFlatVector::<bool>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        _ => {
-            bail!("unhandled field type");
-        }
-    };
+    }
 
     Ok(())
 }
@@ -348,7 +323,7 @@ pub struct ColumnKey {
 impl ColumnKey {
     pub fn field(&self, field: &FieldDescriptor) -> ColumnKey {
         self.extending(ColumnKeyElement::Field {
-            field_tag: field.number(),
+            field_tag: field.proto().number() as u32,
         })
     }
 
