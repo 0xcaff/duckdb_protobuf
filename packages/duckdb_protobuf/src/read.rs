@@ -5,7 +5,10 @@ use std::slice;
 
 use anyhow::{bail, format_err};
 use duckdb::vtab::{DataChunk, LogicalTypeId};
-use protobuf::reflect::{FieldDescriptor, MessageDescriptor, MessageRef, ReflectFieldRef, ReflectOptionalRef, ReflectValueRef, RuntimeFieldType, RuntimeType};
+use protobuf::reflect::{
+    FieldDescriptor, MessageDescriptor, MessageRef, ReflectFieldRef, ReflectOptionalRef,
+    ReflectValueRef, RuntimeFieldType, RuntimeType,
+};
 use protobuf::MessageDyn;
 
 pub fn write_to_output(
@@ -15,6 +18,8 @@ pub fn write_to_output(
     output: &DataChunk,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
     let column_key = &ColumnKey::empty();
     let message_descriptor = value.descriptor_dyn();
@@ -39,6 +44,8 @@ pub fn write_to_output(
             column_vector,
             max_rows,
             row_idx,
+            include_position,
+            starting_offset,
         )?;
     }
 
@@ -53,10 +60,17 @@ pub fn write_message(
     output: &impl VectorAccessor,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
+    let mut last_field_idx = 0;
     for (field_idx, field_descriptor) in message_descriptor.fields().enumerate() {
+        last_field_idx = field_idx;
+
         let column_vector = output.get_vector(field_idx);
-        let field_ref = value.as_ref().map(|it| field_descriptor.get_reflect(it.deref()));
+        let field_ref = value
+            .as_ref()
+            .map(|it| field_descriptor.get_reflect(it.deref()));
 
         let column_key = column_key.field(&field_descriptor);
 
@@ -68,8 +82,30 @@ pub fn write_message(
             column_vector,
             max_rows,
             row_idx,
+            include_position,
+            starting_offset,
         )?;
     }
+
+    // if include_position {
+    //     if let Some(value) = value {
+    //         let (start_pos, end_pos) = value.deref().special_fields_dyn().range();
+
+    //         let mut position_vector = {
+    //             let column = output.get_vector(last_field_idx + 1);
+    //             unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) }
+    //         };
+
+    //         let mut length_vector = {
+    //             let column = output.get_vector(last_field_idx + 2);
+    //             unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) }
+    //         };
+
+    //         position_vector.as_mut_slice()[row_idx] = start_pos + starting_offset;
+    //         length_vector.as_mut_slice()[row_idx] = end_pos - start_pos;
+    //     }
+    // }
+
 
     Ok(())
 }
@@ -106,9 +142,11 @@ pub fn write_column(
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
     match field_descriptor.runtime_field_type() {
-        RuntimeFieldType::Repeated(values) => {
+        RuntimeFieldType::Repeated(element_type) => {
             let column_key = column_key.extending(ColumnKeyElement::List);
 
             let mut list_entries_vector = unsafe {
@@ -147,7 +185,7 @@ pub fn write_column(
 
             if let Some(ReflectFieldRef::Repeated(values)) = field_ref {
                 let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(column) };
-                
+
                 let element_type = values.element_type();
 
                 for (idx, value) in values.into_iter().enumerate() {
@@ -157,11 +195,12 @@ pub fn write_column(
                         columns_state,
                         &column_key,
                         ReflectOptionalRef::some(value),
-                        field_descriptor,
                         &element_type,
                         child_vector,
                         new_length as usize,
                         row_idx,
+                        include_position,
+                        starting_offset
                     )?;
                 }
             }
@@ -170,12 +209,17 @@ pub fn write_column(
             write_single_column(
                 columns_state,
                 column_key,
-                if let Some(ReflectFieldRef::Optional(values)) = field_ref { values } else { ReflectOptionalRef::none(runtime_type.clone()) },
-                field_descriptor,
+                if let Some(ReflectFieldRef::Optional(values)) = field_ref {
+                    values
+                } else {
+                    ReflectOptionalRef::none(runtime_type.clone())
+                },
                 &runtime_type,
                 column,
                 max_rows,
                 row_idx,
+                include_position,
+                starting_offset
             )?;
         }
         _ => return Err(format_err!("unknown type")),
@@ -188,11 +232,12 @@ pub fn write_single_column(
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
     value: ReflectOptionalRef,
-    field_descriptor: &FieldDescriptor,
     runtime_type: &RuntimeType,
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
     match runtime_type {
         RuntimeType::Message(message_descriptor)
@@ -228,10 +273,16 @@ pub fn write_single_column(
                 columns_state,
                 column_key,
                 &message_descriptor,
-                if let Some(ReflectValueRef::Message(message)) = value.value() { Some(message) } else { None },
+                if let Some(ReflectValueRef::Message(message)) = value.value() {
+                    Some(message)
+                } else {
+                    None
+                },
                 &source,
                 max_rows,
                 row_idx,
+                include_position,
+                starting_offset,
             )?;
         }
         RuntimeType::Enum(enum_descriptor) => {

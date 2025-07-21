@@ -27,7 +27,6 @@ pub struct Parameters {
     pub length_kind: LengthKind,
     pub include_filename: bool,
     pub include_position: bool,
-    pub include_size: bool,
 }
 
 impl Parameters {
@@ -97,11 +96,6 @@ impl Parameters {
             .map(|value| value.to_int64() != 0)
             .unwrap_or(false);
 
-        let include_size = bind
-            .get_named_parameter("size")
-            .map(|value| value.to_int64() != 0)
-            .unwrap_or(false);
-
         Ok(Self {
             files,
             descriptor_bytes,
@@ -111,7 +105,6 @@ impl Parameters {
             length_kind,
             include_filename,
             include_position,
-            include_size,
         })
     }
 
@@ -145,7 +138,6 @@ impl Parameters {
                 "position".to_string(),
                 LogicalType::new(LogicalTypeId::Boolean),
             ),
-            ("size".to_string(), LogicalType::new(LogicalTypeId::Boolean)),
         ]
     }
 }
@@ -237,7 +229,7 @@ impl ProtobufVTab {
         for field_descriptor in params.message_descriptor.fields() {
             bind.add_result_column(
                 field_descriptor.name().as_ref(),
-                into_logical_type(&field_descriptor)?,
+                into_logical_type(&field_descriptor, params.include_position)?,
             );
         }
 
@@ -247,9 +239,6 @@ impl ProtobufVTab {
 
         if params.include_position {
             bind.add_result_column("position", LogicalType::new(LogicalTypeId::UBigint));
-        }
-
-        if params.include_size {
             bind.add_result_column("size", LogicalType::new(LogicalTypeId::UBigint));
         }
 
@@ -321,6 +310,8 @@ impl ProtobufVTab {
                 output,
                 available_chunk_size,
                 output_row_idx,
+                parameters.include_position,
+                position,
             )?;
 
             if parameters.include_filename {
@@ -372,9 +363,7 @@ impl ProtobufVTab {
                 }
 
                 field_offset += 1;
-            }
 
-            if parameters.include_size {
                 if let Some((field_offset, _)) = init_data
                     .column_indices
                     .iter()
