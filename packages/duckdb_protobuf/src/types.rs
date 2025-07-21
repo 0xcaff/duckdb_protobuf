@@ -1,54 +1,60 @@
 use anyhow::format_err;
 use duckdb::vtab::{LogicalType, LogicalTypeId};
-use prost_reflect::{Cardinality, FieldDescriptor, Kind};
+use protobuf::reflect::{FieldDescriptor, RuntimeFieldType, RuntimeType};
 
-pub fn into_logical_type(field: &FieldDescriptor) -> Result<LogicalType, anyhow::Error> {
-    Ok(match field.cardinality() {
-        Cardinality::Optional | Cardinality::Required => into_logical_type_single(field)?,
-        Cardinality::Repeated => LogicalType::list(&into_logical_type_single(field)?),
+pub fn into_logical_type(
+    field: &FieldDescriptor,
+    with_location: bool,
+) -> Result<LogicalType, anyhow::Error> {
+    Ok(match field.runtime_field_type() {
+        RuntimeFieldType::Singular(field) => into_logical_type_single(field, with_location)?,
+        RuntimeFieldType::Repeated(field) => {
+            LogicalType::list(&into_logical_type_single(field, with_location)?)
+        }
+        RuntimeFieldType::Map(_, _) => return Err(format_err!("map unimplemented")),
     })
 }
 
-fn into_logical_type_single(field: &FieldDescriptor) -> Result<LogicalType, anyhow::Error> {
-    let value = match field.kind() {
-        Kind::Message(message_descriptor)
-            if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
-        {
-            LogicalType::new(LogicalTypeId::Timestamp)
-        }
-        Kind::Message(message_descriptor) => {
-            let fields = message_descriptor
-                .fields()
-                .collect::<Vec<FieldDescriptor>>();
+fn into_logical_type_single(
+    field: RuntimeType,
+    with_location: bool,
+) -> Result<LogicalType, anyhow::Error> {
+    let value = match field {
+        RuntimeType::Message(message_descriptor) => {
+            if message_descriptor.full_name() == "google.protobuf.Timestamp" {
+                LogicalType::new(LogicalTypeId::Timestamp)
+            } else {
+                let fields = message_descriptor
+                    .fields()
+                    .collect::<Vec<FieldDescriptor>>();
 
-            let fields = fields
-                .iter()
-                .map(|field| Ok((field.name(), into_logical_type(&field)?)))
-                .collect::<Result<Vec<(&str, LogicalType)>, anyhow::Error>>()?;
+                let mut fields = fields
+                    .iter()
+                    .map(|field| Ok((field.name(), into_logical_type(&field, with_location)?)))
+                    .collect::<Result<Vec<(&str, LogicalType)>, anyhow::Error>>()?;
 
-            LogicalType::struct_type(fields.as_slice())
+                if with_location {
+                    fields.push(("position", LogicalType::new(LogicalTypeId::UBigint)));
+                    fields.push(("length", LogicalType::new(LogicalTypeId::UBigint)))
+                }
+
+                LogicalType::struct_type(fields.as_slice())
+            }
         }
-        Kind::Enum(descriptor) => {
-            let names = descriptor.values().collect::<Vec<_>>();
+        RuntimeType::Enum(enum_descriptor) => {
+            let names = enum_descriptor.values().collect::<Vec<_>>();
             let names = names.iter().map(|it| it.name()).collect::<Vec<_>>();
             LogicalType::enumeration(names.as_slice())
         }
-        Kind::Double => LogicalType::new(LogicalTypeId::Double),
-        Kind::Float => LogicalType::new(LogicalTypeId::Float),
-        Kind::Int32 => LogicalType::new(LogicalTypeId::Integer),
-        Kind::Int64 => LogicalType::new(LogicalTypeId::Bigint),
-        Kind::Uint32 => LogicalType::new(LogicalTypeId::UInteger),
-        Kind::Uint64 => LogicalType::new(LogicalTypeId::UBigint),
-        Kind::Bool => LogicalType::new(LogicalTypeId::Boolean),
-        Kind::String => LogicalType::new(LogicalTypeId::Varchar),
-        logical_type => {
-            return Err(format_err!(
-                "unhandled field: {}, type: {:?}",
-                field.name(),
-                logical_type,
-            )
-            .into())
-        }
+        RuntimeType::F64 => LogicalType::new(LogicalTypeId::Double),
+        RuntimeType::F32 => LogicalType::new(LogicalTypeId::Float),
+        RuntimeType::I32 => LogicalType::new(LogicalTypeId::Integer),
+        RuntimeType::I64 => LogicalType::new(LogicalTypeId::Bigint),
+        RuntimeType::U32 => LogicalType::new(LogicalTypeId::UInteger),
+        RuntimeType::U64 => LogicalType::new(LogicalTypeId::UBigint),
+        RuntimeType::Bool => LogicalType::new(LogicalTypeId::Boolean),
+        RuntimeType::String => LogicalType::new(LogicalTypeId::Varchar),
+        RuntimeType::VecU8 => LogicalType::new(LogicalTypeId::Blob),
     };
 
     Ok(value)

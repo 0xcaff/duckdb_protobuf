@@ -1,4 +1,3 @@
-use crate::filtered_dynamic_message::FilteredDynamicMessage;
 use crate::io::{parse, DelimitedLengthKind, LengthDelimitedRecordsReader, LengthKind, Record};
 use crate::read::{write_to_output, MyFlatVector, VectorAccessor};
 use crate::types::into_logical_type;
@@ -8,8 +7,9 @@ use duckdb::vtab::{
     BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
     VTabLocalData,
 };
-use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, ReflectMessage};
+use protobuf::descriptor::FileDescriptorSet;
+use protobuf::reflect::{FileDescriptor, MessageDescriptor};
+use protobuf::CodedInputStream;
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::File;
@@ -22,11 +22,11 @@ pub struct Parameters {
     pub files: String,
     pub descriptor_bytes: Vec<u8>,
     pub message_name: String,
-    pub shared_message_descriptor: MessageDescriptor,
+    pub file_descriptors: Vec<FileDescriptor>,
+    pub message_descriptor: MessageDescriptor,
     pub length_kind: LengthKind,
     pub include_filename: bool,
     pub include_position: bool,
-    pub include_size: bool,
 }
 
 impl Parameters {
@@ -50,16 +50,34 @@ impl Parameters {
         })()
         .with_context(|| format_err!("field `descriptors`"))?;
 
-        let shared_descriptor_pool = DescriptorPool::decode(descriptor_bytes.as_slice())?;
+        let descriptor_set: FileDescriptorSet =
+            protobuf::Message::parse_from_bytes(&descriptor_bytes)?;
+        let file_descriptors = {
+            let mut file_descriptors = Vec::with_capacity(descriptor_set.file.len());
+            for fd_proto in descriptor_set.file {
+                let fd = FileDescriptor::new_dynamic(fd_proto, &file_descriptors)?;
+                file_descriptors.push(fd);
+            }
+
+            file_descriptors
+        };
 
         let message_name = bind
             .get_named_parameter("message_type")
             .ok_or_else(|| format_err!("missing parameter `message_type`"))?
             .to_string();
 
-        let message_descriptor = shared_descriptor_pool
-            .get_message_by_name(&message_name.as_str())
-            .ok_or_else(|| format_err!("message type not found in `descriptor`"))?;
+        let message_descriptor = (|| {
+            for file_descriptor in &file_descriptors {
+                if let Some(message_descriptor) =
+                    file_descriptor.message_by_full_name(&format!(".{}", message_name))
+                {
+                    return Ok(message_descriptor);
+                }
+            }
+
+            Err(anyhow::anyhow!("message type '{}' not found", message_name))
+        })()?;
 
         let length_kind = bind
             .get_named_parameter("delimiter")
@@ -78,31 +96,20 @@ impl Parameters {
             .map(|value| value.to_int64() != 0)
             .unwrap_or(false);
 
-        let include_size = bind
-            .get_named_parameter("size")
-            .map(|value| value.to_int64() != 0)
-            .unwrap_or(false);
-
         Ok(Self {
             files,
             descriptor_bytes,
             message_name,
-            shared_message_descriptor: message_descriptor,
+            file_descriptors,
+            message_descriptor,
             length_kind,
             include_filename,
             include_position,
-            include_size,
         })
     }
 
     pub fn message_descriptor(&self) -> Result<MessageDescriptor, anyhow::Error> {
-        let descriptor_pool = DescriptorPool::decode(self.descriptor_bytes.as_slice())?;
-
-        let message_descriptor = descriptor_pool
-            .get_message_by_name(&self.message_name)
-            .unwrap();
-
-        Ok(message_descriptor)
+        Ok(self.message_descriptor.clone())
     }
 
     pub fn values() -> Vec<(String, LogicalType)> {
@@ -131,7 +138,6 @@ impl Parameters {
                 "position".to_string(),
                 LogicalType::new(LogicalTypeId::Boolean),
             ),
-            ("size".to_string(), LogicalType::new(LogicalTypeId::Boolean)),
         ]
     }
 }
@@ -220,10 +226,10 @@ impl ProtobufVTab {
 
         let params = Parameters::from_bind_info(bind)?;
 
-        for field_descriptor in params.shared_message_descriptor.fields() {
+        for field_descriptor in params.message_descriptor.fields() {
             bind.add_result_column(
                 field_descriptor.name().as_ref(),
-                into_logical_type(&field_descriptor)?,
+                into_logical_type(&field_descriptor, params.include_position)?,
             );
         }
 
@@ -233,9 +239,6 @@ impl ProtobufVTab {
 
         if params.include_position {
             bind.add_result_column("position", LogicalType::new(LogicalTypeId::UBigint));
-        }
-
-        if params.include_size {
             bind.add_result_column("size", LogicalType::new(LogicalTypeId::UBigint));
         }
 
@@ -282,28 +285,7 @@ impl ProtobufVTab {
 
         let mut column_information = Default::default();
 
-        let message = {
-            let message = DynamicMessage::new(local_descriptor.clone());
-            let fields: Vec<_> = local_descriptor.fields().collect();
-
-            let message = FilteredDynamicMessage::new(
-                message,
-                init_data
-                    .column_indices
-                    .iter()
-                    .filter_map(|it| {
-                        let it = *it as usize;
-                        if it >= fields.len() {
-                            return None;
-                        }
-
-                        Some(fields[it].number())
-                    })
-                    .collect(),
-            );
-
-            message
-        };
+        let mut message_template = local_descriptor.new_instance();
 
         for output_row_idx in 0..available_chunk_size {
             let StateContainerValue {
@@ -316,20 +298,21 @@ impl ProtobufVTab {
                 Some(message_info) => message_info,
             };
 
-            let mut message = message.clone();
-            message.merge(bytes.as_slice())?;
-            let message = message.into();
+            let mut cis = CodedInputStream::from_bytes(&bytes);
+            message_template.merge_from_dyn(&mut cis)?;
+
+            let mut field_offset = message_template.descriptor_dyn().fields().count();
 
             write_to_output(
                 &init_data.column_indices,
                 &mut column_information,
-                &message,
+                message_template.as_ref(),
                 output,
                 available_chunk_size,
                 output_row_idx,
+                parameters.include_position,
+                position,
             )?;
-
-            let mut field_offset = message.descriptor().fields().len();
 
             if parameters.include_filename {
                 if let Some((field_offset, _)) = init_data
@@ -380,9 +363,7 @@ impl ProtobufVTab {
                 }
 
                 field_offset += 1;
-            }
 
-            if parameters.include_size {
                 if let Some((field_offset, _)) = init_data
                     .column_indices
                     .iter()
