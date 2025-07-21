@@ -71,15 +71,26 @@
           patches = [ patches/libduckdb-sys+1.0.0.patch ];
         };
 
+        protobufCrate = applyPatch {
+          src = pkgs.fetchCrate {
+            pname = "protobuf";
+            version = "3.5.0";
+            sha256 = "sha256-xU9CAl/LQT9Gk0OdnbZuViQUeeD1tbvJcmxc9ohuZM8=";
+          };
+          patches = [ ];
+        };
+
         vendorScript = pkgs.writeShellScriptBin "vendor-deps" ''
           set -euo pipefail
           mkdir -p packages/vendor/duckdb
           mkdir -p packages/vendor/duckdb-loadable-macros
           mkdir -p packages/vendor/libduckdb-sys
+          mkdir -p packages/vendor/protobuf
 
           cp -r ${duckdbCrate}/* packages/vendor/duckdb/
           cp -r ${duckdbLoadableMacrosCrate}/* packages/vendor/duckdb-loadable-macros/
           cp -r ${libduckdbSysCrate}/* packages/vendor/libduckdb-sys/
+          cp -r ${protobufCrate}/* packages/vendor/protobuf/
         '';
 
         vendoredSrc = pkgs.stdenvNoCC.mkDerivation {
