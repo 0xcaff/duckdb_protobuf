@@ -71,19 +71,22 @@
           patches = [ patches/libduckdb-sys+1.0.0.patch ];
         };
 
+        vendorScript = pkgs.writeShellScriptBin "vendor-deps" ''
+          set -euo pipefail
+          mkdir -p packages/vendor/duckdb
+          mkdir -p packages/vendor/duckdb-loadable-macros
+          mkdir -p packages/vendor/libduckdb-sys
+
+          cp -r ${duckdbCrate}/* packages/vendor/duckdb/
+          cp -r ${duckdbLoadableMacrosCrate}/* packages/vendor/duckdb-loadable-macros/
+          cp -r ${libduckdbSysCrate}/* packages/vendor/libduckdb-sys/
+        '';
+
         vendoredSrc = pkgs.stdenvNoCC.mkDerivation {
           name = "duckdb-protobuf-src-with-vendor";
           src = ./.;
 
-          buildPhase = ''
-            mkdir -p packages/vendor/duckdb
-            mkdir -p packages/vendor/duckdb-loadable-macros
-            mkdir -p packages/vendor/libduckdb-sys
-
-            cp -r ${duckdbCrate}/* packages/vendor/duckdb/
-            cp -r ${duckdbLoadableMacrosCrate}/* packages/vendor/duckdb-loadable-macros/
-            cp -r ${libduckdbSysCrate}/* packages/vendor/libduckdb-sys/
-          '';
+          buildPhase = "${vendorScript}/bin/vendor-deps";
 
           installPhase = ''
             mkdir -p $out
@@ -131,7 +134,10 @@
             pkgs.crate2nix
           ];
         };
+
         packages = {
+          inherit vendorScript;
+
           default = pkgs.stdenv.mkDerivation {
             name = "duckdb-protobuf-extension";
 
