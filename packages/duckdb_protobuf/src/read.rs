@@ -145,9 +145,9 @@ pub fn write_column(
             unsafe { duckdb::ffi::duckdb_list_vector_reserve(column, new_length) };
             unsafe { duckdb::ffi::duckdb_list_vector_set_size(column, new_length) };
 
-            let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(column) };
-
             if let Some(ReflectFieldRef::Repeated(values)) = field_ref {
+                let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(column) };
+                
                 let element_type = values.element_type();
 
                 for (idx, value) in values.into_iter().enumerate() {
