@@ -1,0 +1,99 @@
+diff --git a/src/core/logical_type.rs b/src/core/logical_type.rs
+--- a/src/core/logical_type.rs
++++ b/src/core/logical_type.rs
+@@ -226,6 +226,21 @@ impl LogicalTypeHandle {
+         Self { ptr }
+     }
+-
++
++    /// Creates an enum type from its ordered member names.
++    pub fn enumeration(names: &[&str]) -> Self {
++        let strings: Vec<CString> = names
++            .iter()
++            .map(|name| CString::new(*name).expect("enum member name must not contain NUL bytes"))
++            .collect();
++        let mut pointers: Vec<*const c_char> = strings.iter().map(|name| name.as_ptr()).collect();
++
++        unsafe {
++            Self {
++                ptr: duckdb_create_enum_type(pointers.as_mut_ptr(), pointers.len() as idx_t),
++            }
++        }
++    }
++
+     /// Creates a map type from its child type.
+     pub fn map(key: &Self, value: &Self) -> Self {
+         unsafe {
+diff --git a/src/vtab/mod.rs b/src/vtab/mod.rs
+--- a/src/vtab/mod.rs
++++ b/src/vtab/mod.rs
+@@ -100,6 +100,15 @@ pub trait VTab: Sized {
+     }
+ }
+-
++
++/// A table function with state initialized independently for every execution thread.
++pub trait VTabLocalData: VTab {
++    /// The thread-local state type.
++    type LocalInitData: Sized;
++
++    /// Initialize the state for one execution thread.
++    fn local_init(init: &InitInfo) -> Result<Self::LocalInitData, Box<dyn std::error::Error>>;
++}
++
+ unsafe extern "C" fn func<T>(info: duckdb_function_info, output: duckdb_data_chunk)
+ where
+     T: VTab,
+@@ -128,6 +137,23 @@ where
+     });
+ }
+-
++
++unsafe extern "C" fn local_init<T>(info: duckdb_init_info)
++where
++    T: VTabLocalData,
++{
++    let info = InitInfo::from(info);
++    contain_callback(&info, || {
++        let init_data = T::local_init(&info)?;
++        unsafe {
++            info.set_init_data(
++                Box::into_raw(Box::new(init_data)) as *mut c_void,
++                Some(drop_boxed::<T::LocalInitData>),
++            );
++        }
++        Ok(())
++    });
++}
++
+ unsafe extern "C" fn bind<T>(info: duckdb_bind_info)
+ where
+     T: VTab,
+@@ -165,6 +191,26 @@ impl Connection {
+         self.db.borrow_mut().register_table_function(table_function)
+     }
+-
++
++    /// Register a table function with per-thread initialization data.
++    #[inline]
++    pub fn register_table_function_local_init<T: VTabLocalData>(&self, name: &str) -> Result<()> {
++        let table_function = TableFunction::default();
++        table_function
++            .set_name(name)
++            .supports_pushdown(T::supports_pushdown())
++            .set_bind(Some(bind::<T>))
++            .set_init(Some(init::<T>))
++            .set_function(Some(func::<T>));
++        table_function.set_local_init(Some(local_init::<T>));
++        for ty in T::parameters().unwrap_or_default() {
++            table_function.add_parameter(&ty);
++        }
++        for (name, ty) in T::named_parameters().unwrap_or_default() {
++            table_function.add_named_parameter(&name, &ty);
++        }
++        self.db.borrow_mut().register_table_function(table_function)
++    }
++
+     /// Register the given TableFunction with custom extra info.
+     ///
+     /// This allows you to pass extra info that can be accessed during bind, init, and execution
