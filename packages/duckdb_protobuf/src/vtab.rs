@@ -4,9 +4,9 @@ use crate::read::{write_to_output, MyFlatVector, VectorAccessor};
 use crate::types::into_logical_type;
 use anyhow::{format_err, Context};
 use crossbeam::queue::ArrayQueue;
-use duckdb::vtab::{
-    BindInfo, DataChunk, Free, FunctionInfo, InitInfo, LogicalType, LogicalTypeId, VTab,
-    VTabLocalData,
+use duckdb::{
+    core::{DataChunkHandle, LogicalTypeHandle, LogicalTypeId},
+    vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab, VTabLocalData},
 };
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, ReflectMessage};
@@ -14,9 +14,7 @@ use std::error::Error;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Read;
-use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::ptr::null_mut;
 
 pub struct Parameters {
     pub files: String,
@@ -105,33 +103,36 @@ impl Parameters {
         Ok(message_descriptor)
     }
 
-    pub fn values() -> Vec<(String, LogicalType)> {
+    pub fn values() -> Vec<(String, LogicalTypeHandle)> {
         vec![
             (
                 "files".to_string(),
-                LogicalType::new(LogicalTypeId::Varchar),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
             ),
             (
                 "message_type".to_string(),
-                LogicalType::new(LogicalTypeId::Varchar),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
             ),
             (
                 "descriptors".to_string(),
-                LogicalType::new(LogicalTypeId::Varchar),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
             ),
             (
                 "delimiter".to_string(),
-                LogicalType::new(LogicalTypeId::Varchar),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
             ),
             (
                 "filename".to_string(),
-                LogicalType::new(LogicalTypeId::Boolean),
+                LogicalTypeHandle::from(LogicalTypeId::Boolean),
             ),
             (
                 "position".to_string(),
-                LogicalType::new(LogicalTypeId::Boolean),
+                LogicalTypeHandle::from(LogicalTypeId::Boolean),
             ),
-            ("size".to_string(), LogicalType::new(LogicalTypeId::Boolean)),
+            (
+                "size".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Boolean),
+            ),
         ]
     }
 }
@@ -180,31 +181,25 @@ impl GlobalState {
 pub struct ProtobufVTab;
 
 impl VTab for ProtobufVTab {
-    type InitData = Handle<GlobalState>;
-    type BindData = Handle<Parameters>;
+    type InitData = GlobalState;
+    type BindData = Parameters;
 
-    unsafe fn bind(
-        bind: &BindInfo,
-        data: *mut Self::BindData,
-    ) -> duckdb::Result<(), Box<dyn Error>> {
-        Ok(Self::bind(bind, data).map_err(format_error_with_causes)?)
+    fn bind(bind: &BindInfo) -> duckdb::Result<Self::BindData, Box<dyn Error>> {
+        Self::bind(bind).map_err(box_error_with_causes)
     }
 
-    unsafe fn init(
-        init_info: &InitInfo,
-        data: *mut Self::InitData,
-    ) -> duckdb::Result<(), Box<dyn Error>> {
-        Ok(Self::init(init_info, data).map_err(format_error_with_causes)?)
+    fn init(init_info: &InitInfo) -> duckdb::Result<Self::InitData, Box<dyn Error>> {
+        Self::init(init_info).map_err(box_error_with_causes)
     }
 
-    unsafe fn func(
-        func: &FunctionInfo,
-        output: &mut DataChunk,
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
     ) -> duckdb::Result<(), Box<dyn Error>> {
-        Ok(Self::func(func, output).map_err(format_error_with_causes)?)
+        Self::func(func, output).map_err(box_error_with_causes)
     }
 
-    fn named_parameters() -> Option<Vec<(String, LogicalType)>> {
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
         Some(Parameters::values())
     }
 
@@ -214,10 +209,7 @@ impl VTab for ProtobufVTab {
 }
 
 impl ProtobufVTab {
-    fn bind(bind: &BindInfo, data: *mut <Self as VTab>::BindData) -> Result<(), anyhow::Error> {
-        let data = unsafe { &mut *data };
-        data.init();
-
+    fn bind(bind: &BindInfo) -> Result<Parameters, anyhow::Error> {
         let params = Parameters::from_bind_info(bind)?;
 
         for field_descriptor in params.shared_message_descriptor.fields() {
@@ -228,46 +220,37 @@ impl ProtobufVTab {
         }
 
         if params.include_filename {
-            bind.add_result_column("filename", LogicalType::new(LogicalTypeId::Varchar));
+            bind.add_result_column("filename", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         }
 
         if params.include_position {
-            bind.add_result_column("position", LogicalType::new(LogicalTypeId::UBigint));
+            bind.add_result_column("position", LogicalTypeHandle::from(LogicalTypeId::UBigint));
         }
 
         if params.include_size {
-            bind.add_result_column("size", LogicalType::new(LogicalTypeId::UBigint));
+            bind.add_result_column("size", LogicalTypeHandle::from(LogicalTypeId::UBigint));
         }
 
-        data.assign(params);
-
-        Ok(())
+        Ok(params)
     }
 
-    fn init(
-        init_info: &InitInfo,
-        data: *mut <Self as VTab>::InitData,
-    ) -> Result<(), anyhow::Error> {
-        let data = unsafe { &mut *data };
-        data.init();
-
-        let bind_data = unsafe { &*init_info.get_bind_data::<<Self as VTab>::BindData>() };
+    fn init(init_info: &InitInfo) -> Result<GlobalState, anyhow::Error> {
+        let bind_data = unsafe { &*init_info.get_bind_data::<Parameters>() };
         let column_indices = init_info.get_column_indices();
 
         let new_global_state = GlobalState::new(bind_data, column_indices)?;
         init_info.set_max_threads(new_global_state.queue.len() as _);
-        data.assign(new_global_state);
-
-        Ok(())
+        Ok(new_global_state)
     }
 
-    fn func(func: &FunctionInfo, output: &mut DataChunk) -> duckdb::Result<(), anyhow::Error> {
-        let bind_data = unsafe { &mut *func.get_bind_data::<<Self as VTab>::BindData>() };
-        let init_data = unsafe { &mut *func.get_init_data::<<Self as VTab>::InitData>() };
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> duckdb::Result<(), anyhow::Error> {
+        let parameters = func.get_bind_data();
+        let init_data = func.get_init_data();
         let local_init_data =
             unsafe { &mut *func.get_local_init_data::<<Self as VTabLocalData>::LocalInitData>() };
-
-        let parameters: &Parameters = bind_data.deref();
 
         let local_descriptor = local_init_data.local_descriptor.clone();
 
@@ -435,7 +418,7 @@ struct StateContainerValue<'a> {
 }
 
 impl StateContainer<'_> {
-    fn next_message(&mut self) -> Result<Option<StateContainerValue>, anyhow::Error> {
+    fn next_message(&mut self) -> Result<Option<StateContainerValue<'_>>, anyhow::Error> {
         let mut value = match self.local_state.current.take() {
             Some(it) => it,
             None => {
@@ -498,69 +481,25 @@ pub struct LocalState {
 }
 
 impl VTabLocalData for ProtobufVTab {
-    type LocalInitData = Handle<LocalState>;
+    type LocalInitData = LocalState;
 
-    fn local_init(
-        init_info: &InitInfo,
-        data: *mut Self::LocalInitData,
-    ) -> duckdb::Result<(), Box<dyn Error>> {
-        let bind_data = unsafe { &*init_info.get_bind_data::<<Self as VTab>::BindData>() };
-        let local_descriptor = bind_data.message_descriptor()?;
+    fn local_init(init_info: &InitInfo) -> duckdb::Result<Self::LocalInitData, Box<dyn Error>> {
+        let bind_data = unsafe { &*init_info.get_bind_data::<Parameters>() };
+        let local_descriptor = bind_data
+            .message_descriptor()
+            .map_err(box_error_with_causes)?;
 
-        let data = unsafe { &mut *data };
-        data.init();
-
-        data.assign(LocalState {
+        Ok(LocalState {
             current: None,
             local_descriptor,
-        });
-
-        Ok(())
+        })
     }
 }
 
-#[repr(C)]
-pub struct Handle<T> {
-    inner: *mut T,
-}
-
-impl<T> Handle<T> {
-    pub fn assign(&mut self, inner: T) {
-        self.inner = Box::into_raw(Box::new(inner));
-    }
-    pub fn init(&mut self) {
-        self.inner = null_mut();
-    }
-}
-
-impl<T> Deref for Handle<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        if self.inner.is_null() {
-            panic!("unable to deref non-null handle")
-        }
-
-        unsafe { &*self.inner }
-    }
-}
-
-impl<T> DerefMut for Handle<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.inner }
-    }
-}
-
-impl<T> Free for Handle<T> {
-    fn free(&mut self) {
-        unsafe {
-            if self.inner.is_null() {
-                return;
-            }
-
-            drop(Box::from_raw(self.inner));
-        }
-    }
+fn box_error_with_causes(error: anyhow::Error) -> Box<dyn Error> {
+    Box::new(std::io::Error::other(
+        format_error_with_causes(error).to_string(),
+    ))
 }
 
 fn format_error_with_causes(error: anyhow::Error) -> anyhow::Error {

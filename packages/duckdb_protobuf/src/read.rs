@@ -4,14 +4,14 @@ use std::marker::PhantomData;
 use std::slice;
 
 use anyhow::{bail, format_err};
-use duckdb::vtab::{DataChunk, LogicalType, LogicalTypeId};
+use duckdb::core::{DataChunkHandle, LogicalTypeId};
 use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 
 pub fn write_to_output(
     mappings: &[u64],
     columns_state: &mut HashMap<ColumnKey, u64>,
     value: &DynamicMessage,
-    output: &DataChunk,
+    output: &DataChunkHandle,
     max_rows: usize,
     row_idx: usize,
 ) -> Result<(), anyhow::Error> {
@@ -240,10 +240,10 @@ pub fn write_single_column(
                 .find(|(_, it)| it.number() == enum_value_descriptor.number())
                 .unwrap();
 
-            let column_type =
-                unsafe { duckdb::ffi::duckdb_vector_get_column_type(column) };
-
-            let logical_type = LogicalTypeId::from(unsafe { duckdb::ffi::duckdb_enum_internal_type(column_type) });
+            let mut column_type = unsafe { duckdb::ffi::duckdb_vector_get_column_type(column) };
+            let logical_type =
+                LogicalTypeId::from(unsafe { duckdb::ffi::duckdb_enum_internal_type(column_type) });
+            unsafe { duckdb::ffi::duckdb_destroy_logical_type(&mut column_type) };
 
             match logical_type {
                 LogicalTypeId::UTinyint => {
@@ -367,7 +367,7 @@ pub trait VectorAccessor {
     fn get_vector(&self, column_idx: usize) -> duckdb::ffi::duckdb_vector;
 }
 
-impl VectorAccessor for DataChunk {
+impl VectorAccessor for DataChunkHandle {
     fn get_vector(&self, column_idx: usize) -> duckdb::ffi::duckdb_vector {
         let chunk = self.get_ptr();
 

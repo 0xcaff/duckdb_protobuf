@@ -1,8 +1,7 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    crate2nix.url = "github:nix-community/crate2nix";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -11,10 +10,9 @@
   };
 
   outputs =
-    inputs@{
+    {
       flake-utils,
       nixpkgs,
-      crate2nix,
       rust-overlay,
       ...
     }:
@@ -24,7 +22,6 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            crate2nix.overlays.default
             rust-overlay.overlays.default
           ];
         };
@@ -47,39 +44,17 @@
         duckdbCrate = applyPatch {
           src = pkgs.fetchCrate {
             pname = "duckdb";
-            version = "1.0.0";
-            sha256 = "sha256-XC1+mjocHl0GUSNNNi3pC+BXQEdG6IzeizzAnR5lzMA=";
+            version = "1.10505.0";
+            hash = "sha256-yKTE3tg7SZN3b8wgjdUX2YesxGgxSd+7kzMd6jOMCQs=";
           };
-          patches = [ patches/duckdb+1.0.0.patch ];
-        };
-
-        duckdbLoadableMacrosCrate = applyPatch {
-          src = pkgs.fetchCrate {
-            pname = "duckdb-loadable-macros";
-            version = "0.1.2";
-            sha256 = "sha256-sZzChlJ8O/S/qULlXfeV6UuavbMShIQbiUqPFYb1XKw=";
-          };
-          patches = [ patches/duckdb-loadable-macros+0.1.2.patch ];
-        };
-
-        libduckdbSysCrate = applyPatch {
-          src = pkgs.fetchCrate {
-            pname = "libduckdb-sys";
-            version = "1.0.0";
-            sha256 = "sha256-k9v0RVHOGZoNzyHGu+IKNAfPr6iTDeNPu7VF8kGMRgw=";
-          };
-          patches = [ patches/libduckdb-sys+1.0.0.patch ];
+          patches = [ patches/duckdb+1.10505.0.patch ];
         };
 
         vendorScript = pkgs.writeShellScriptBin "vendor-deps" ''
           set -euo pipefail
           mkdir -p packages/vendor/duckdb
-          mkdir -p packages/vendor/duckdb-loadable-macros
-          mkdir -p packages/vendor/libduckdb-sys
 
           cp -r ${duckdbCrate}/* packages/vendor/duckdb/
-          cp -r ${duckdbLoadableMacrosCrate}/* packages/vendor/duckdb-loadable-macros/
-          cp -r ${libduckdbSysCrate}/* packages/vendor/libduckdb-sys/
         '';
 
         vendoredSrc = pkgs.stdenvNoCC.mkDerivation {
@@ -94,27 +69,37 @@
           '';
         };
 
-        buildRustCrateForPkgs =
-          crate:
-          pkgs.buildRustCrate.override {
-            rustc = pkgs.rust-bin.stable.latest.default;
-            cargo = pkgs.rust-bin.stable.latest.default;
-          };
+        rustToolchain = pkgs.rust-bin.stable.latest.default;
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
+        };
 
-        generatedCargoNix = inputs.crate2nix.tools.${system}.generatedCargoNix {
-          name = "duckdb_protobuf";
+        rustWorkspace = rustPlatform.buildRustPackage {
+          pname = "duckdb-protobuf-workspace";
+          version = "0.1.0";
           src = vendoredSrc;
-        };
+          cargoLock.lockFile = ./Cargo.lock;
+          cargoBuildFlags = [ "--workspace" ];
+          doCheck = false;
 
-        cargoNix = import generatedCargoNix {
-          inherit pkgs buildRustCrateForPkgs;
-        };
+          installPhase = ''
+            runHook preInstall
 
-        duckdb_protobuf = cargoNix.workspaceMembers.duckdb_protobuf.build;
-        duckdb_metadata_bin = cargoNix.workspaceMembers.duckdb_metadata_bin.build;
+            mkdir -p $out/bin $out/lib
+            LIBRARY_PATH=$(find target -type f \
+              \( -name "libduckdb_protobuf.dylib" -o -name "libduckdb_protobuf.so" -o -name "duckdb_protobuf.dll" \) \
+              ! -path "*/deps/*" | head -n 1)
+            METADATA_BIN=$(find target -type f -name "duckdb_metadata" ! -path "*/deps/*" | head -n 1)
+            cp "$LIBRARY_PATH" $out/lib/
+            cp "$METADATA_BIN" $out/bin/
+
+            runHook postInstall
+          '';
+        };
 
         extensionVersion = "v0.0.1";
-        apiVersion = "v0.0.1";
+        apiVersion = "v1.5.5";
 
         platform =
           if system == "x86_64-linux" then
@@ -131,7 +116,7 @@
       rec {
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.crate2nix
+            rustToolchain
           ];
         };
 
@@ -147,15 +132,15 @@
             ];
 
             buildPhase = ''
-              LIBRARY_PATH=$(find ${duckdb_protobuf.lib} -type f -name "*.dylib" -o -name "*.so" -o -name "*.dll" | head -n 1)
+              LIBRARY_PATH=$(find ${rustWorkspace}/lib -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.dll" \) | head -n 1)
 
-              ${duckdb_metadata_bin}/bin/duckdb_metadata \
+              ${rustWorkspace}/bin/duckdb_metadata \
                 --input "$LIBRARY_PATH" \
                 --output protobuf.duckdb_extension \
                 --extension-version ${extensionVersion} \
                 --duckdb-api-version ${apiVersion} \
                 --platform ${platform} \
-                --extension-abi-type C_STRUCT
+                --extension-abi-type C_STRUCT_UNSTABLE
             '';
 
             installPhase = ''

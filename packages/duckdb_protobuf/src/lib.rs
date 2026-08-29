@@ -7,12 +7,10 @@ mod vtab;
 use std::error::Error;
 
 use crate::vtab::ProtobufVTab;
-use duckdb::ffi;
-use duckdb::Connection;
-use duckdb_loadable_macros::duckdb_entrypoint_c_api;
+use duckdb::{duckdb_entrypoint_c_api, Connection};
 
-#[duckdb_entrypoint_c_api(ext_name = "protobuf", min_duckdb_version = "v0.0.1")]
-fn protobuf_init(conn: Connection) -> Result<(), Box<dyn Error>> {
+#[duckdb_entrypoint_c_api(ext_name = "protobuf", min_duckdb_version = "v1.5.5")]
+pub fn protobuf_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     conn.register_table_function_local_init::<ProtobufVTab>("protobuf")?;
 
     Ok(())

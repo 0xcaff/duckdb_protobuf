@@ -5,7 +5,10 @@ type Env = {
   BUCKET: R2Bucket;
 };
 
-const versionMappings = [{ range: "^1.0.0", apiVersion: "v0.0.1" }];
+const versionMappings = [
+  { range: "1.5.5", apiVersion: "v1.5.5" },
+  { range: ">=1.0.0 <1.5.5", apiVersion: "v0.0.1" },
+];
 
 export default class extends WorkerEntrypoint<Env> {
   async fetch(request: Request) {
