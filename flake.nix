@@ -42,10 +42,10 @@
           };
 
         duckdbCrate = applyPatch {
-          src = pkgs.fetchurl {
-            name = "duckdb-1.10505.0.tar.gz";
-            url = "https://static.crates.io/crates/duckdb/duckdb-1.10505.0.crate";
-            hash = "sha256-lw4F7t0/VcQ1GU2RBPkKm0p5qA1ucyUbyf9D4XgTDE4=";
+          src = pkgs.fetchCrate {
+            pname = "duckdb";
+            version = "1.10505.0";
+            hash = "sha256-yKTE3tg7SZN3b8wgjdUX2YesxGgxSd+7kzMd6jOMCQs=";
           };
           patches = [ patches/duckdb+1.10505.0.patch ];
         };
