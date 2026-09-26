@@ -87,7 +87,9 @@ streams with little upfront load complexity or time.
 * `descriptors`: path to the protobuf descriptor file. Generated using something
   like `protoc --descriptor_set_out=descriptor.pb ...`
 * `files`: glob pattern for the files to read. Uses the [`glob`][glob] crate 
-  for evaluating globs.
+  for evaluating globs. A pattern matching no files returns zero rows, with
+  the schema defined by `descriptors` and `message_type`. Invalid glob patterns
+  and errors reading matching files still fail the query.
 * `message_type`: the fully qualified message type to parse.
 * `delimiter`: specifies where one message starts and the next one begins
   * `BigEndianFixed`: every message is prefixed with a u32 big endian value 

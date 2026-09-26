@@ -156,12 +156,9 @@ impl GlobalState {
             tasks
         };
 
-        if tasks.is_empty() {
-            return Err(format_err!("no files matching glob found {}", params.files));
-        }
-
         let queue = {
-            let queue = ArrayQueue::new(tasks.len());
+            // ArrayQueue requires nonzero capacity, even when the glob is empty.
+            let queue = ArrayQueue::new(tasks.len().max(1));
 
             for item in tasks {
                 queue.push(item).unwrap();
@@ -255,7 +252,8 @@ impl ProtobufVTab {
         let column_indices = init_info.get_column_indices();
 
         let new_global_state = GlobalState::new(bind_data, column_indices)?;
-        init_info.set_max_threads(new_global_state.queue.len() as _);
+        // An empty queue still needs a worker to return the zero-row chunk.
+        init_info.set_max_threads(new_global_state.queue.len().max(1) as _);
         data.assign(new_global_state);
 
         Ok(())
