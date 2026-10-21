@@ -1,0 +1,47 @@
+--- a/cargo-dyndrv/src/main.rs
++++ b/cargo-dyndrv/src/main.rs
+@@ -99,6 +99,12 @@
+     env: &mut BTreeMap<bytes::Bytes, bytes::Bytes>,
+     meta: &cargo_metadata::Package,
+ ) {
++    env.insert("CARGO_PKG_NAME".into(), meta.name.to_string().into());
++    env.insert("CARGO_PKG_AUTHORS".into(), meta.authors.join(":").into());
++    env.insert(
++        "CARGO_PKG_DESCRIPTION".into(),
++        meta.description.clone().unwrap_or_default().into(),
++    );
+     env.insert("CARGO_PKG_VERSION".into(), meta.version.to_string().into());
+     env.insert(
+         "CARGO_PKG_VERSION_MAJOR".into(),
+@@ -128,7 +134,7 @@
+     dep: &Unit,
+ ) -> eyre::Result<String> {
+     let dep_crate_type = &dep.target.crate_types[0];
+-    let needs_rlib = crate_type == "bin" || crate_type == "proc-macro";
++    let needs_rlib = !matches!(crate_type, "lib" | "rlib");
+     let extension = if dep_crate_type == "lib" || dep_crate_type == "rlib" {
+         if needs_rlib { ".rlib" } else { ".rmeta" }
+     } else if dep_crate_type == "dylib" || dep_crate_type == "proc-macro" {
+@@ -248,6 +254,10 @@
+         let mut env = base_env.clone();
+         // TODO: more cargo env vars not from cargo metadata
+         add_metadata_env(&mut env, unit_meta);
++        env.insert(
++            "CARGO_CRATE_NAME".into(),
++            unit.target.name.replace('-', "_").into(),
++        );
+
+         env.insert(
+             "CARGO_MANIFEST_DIR".into(),
+@@ -457,6 +467,11 @@
+             add_long(&mut args, "edition", &unit.target.edition);
+             add_long(&mut args, "crate-type", crate_type);
+
++            // Match Cargo: new compiler lints must not break registry or git dependencies.
++            if unit_meta.source.is_some() {
++                add_long(&mut args, "cap-lints", &"allow");
++            }
++
+             if unit.mode == CompileMode::Check {
+                 add_long(&mut args, "emit", &"metadata");
+             } else if unit.mode == CompileMode::Build {

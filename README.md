@@ -70,6 +70,50 @@ LOAD '/Users/martin/Downloads/protobuf.duckdb_extension';
 ```
 </details>
 
+## building with Nix
+
+The Linux Nix build uses [cargo-dyndrv](https://github.com/obsidiansystems/cargo-dyndrv)
+to build each Rust crate with dynamic derivations, without import from derivation
+(IFD). Nixpkgs follows cargo-dyndrv's pinned input so its compiler and build hooks
+stay compatible with the builder. A local cargo-dyndrv patch supplies the Cargo
+metadata variables used by this workspace, caps dependency lints, and links
+`cdylib` dependencies using their Rust libraries.
+
+Both the Nix client and the daemon performing the build need support for
+`builder-rpc-v0` (Nix 2.36 or a recent development build; Nix 2.35 is too old).
+Enable the experimental features in the daemon's `nix.conf` and restart the
+daemon after changing it:
+
+```ini
+extra-experimental-features = ca-derivations dynamic-derivations
+```
+
+Build the extension with IFD disabled:
+
+```sh
+nix build --extra-experimental-features 'ca-derivations dynamic-derivations' \
+  --option allow-import-from-derivation false
+```
+
+The extension is written to `result/linux_amd64/protobuf.duckdb_extension` on
+x86_64 Linux or `result/linux_arm64/protobuf.duckdb_extension` on AArch64 Linux.
+The build preserves the patched DuckDB dependencies and appends the extension
+metadata automatically. The artifact targets the `v0.0.1` C API and needs a
+compatible DuckDB 1.1.x build with a matching platform tag.
+
+cargo-dyndrv does not currently support macOS, so the Nix extension package is
+only exposed on Linux. The development shell and `vendorScript` remain available
+on Apple Silicon macOS. Intel macOS is no longer supported by the pinned
+Nixpkgs. Use the existing Cargo/Makefile build on macOS.
+
+For local development, populate the patched workspace dependencies first:
+
+```sh
+nix develop
+vendor-deps
+cargo build --package duckdb_protobuf --package duckdb_metadata_bin
+```
+
 ## why
 
 sometimes you want to land your row primary data in a format with a well-defined

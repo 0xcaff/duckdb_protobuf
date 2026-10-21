@@ -1,31 +1,29 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.follows = "cargo-dyndrv/nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
-    crate2nix.url = "github:nix-community/crate2nix";
-
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    cargo-dyndrv.url = "github:obsidiansystems/cargo-dyndrv";
   };
 
   outputs =
-    inputs@{
+    {
       flake-utils,
       nixpkgs,
-      crate2nix,
-      rust-overlay,
+      cargo-dyndrv,
       ...
     }:
-    (flake-utils.lib.eachDefaultSystem (
+    (flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            crate2nix.overlays.default
-            rust-overlay.overlays.default
+            cargo-dyndrv.overlays.default
+            (final: prev: {
+              cargo-dyndrv = prev.cargo-dyndrv.overrideAttrs (old: {
+                patches = (old.patches or [ ]) ++ [ ./patches/cargo-dyndrv-cargo-compat.patch ];
+              });
+            })
           ];
         };
 
@@ -94,24 +92,32 @@
           '';
         };
 
-        buildRustCrateForPkgs =
-          crate:
-          pkgs.buildRustCrate.override {
-            rustc = pkgs.rust-bin.stable.latest.default;
-            cargo = pkgs.rust-bin.stable.latest.default;
-          };
-
-        generatedCargoNix = inputs.crate2nix.tools.${system}.generatedCargoNix {
-          name = "duckdb_protobuf";
+        crates = pkgs.buildDynamicCrate {
+          pname = "duckdb-protobuf";
+          version = "0.1.0";
           src = vendoredSrc;
-        };
+          cargoLock.lockFile = ./Cargo.lock;
 
-        cargoNix = import generatedCargoNix {
-          inherit pkgs buildRustCrateForPkgs;
-        };
+          cargoBuildFlags = [
+            "--package"
+            "duckdb_protobuf"
+            "--package"
+            "duckdb_metadata_bin"
+          ];
 
-        duckdb_protobuf = cargoNix.workspaceMembers.duckdb_protobuf.build;
-        duckdb_metadata_bin = cargoNix.workspaceMembers.duckdb_metadata_bin.build;
+          # cargo-dyndrv submits its outputs during the build phase. The default
+          # stdenv install phase would try to create its dummy /nonexistant $out.
+          installPhase = ''
+            runHook preInstall
+            runHook postInstall
+          '';
+
+          # Outputs are named after Cargo targets, not workspace packages.
+          outputs = [
+            "duckdb_protobuf"
+            "duckdb_metadata"
+          ];
+        };
 
         extensionVersion = "v0.0.1";
         apiVersion = "v0.0.1";
@@ -121,23 +127,23 @@
             "linux_amd64"
           else if system == "aarch64-linux" then
             "linux_arm64"
-          else if system == "x86_64-darwin" then
-            "osx_amd64"
-          else if system == "aarch64-darwin" then
-            "osx_arm64"
           else
             throw "Unsupported platform: ${system}";
       in
-      rec {
+      {
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.crate2nix
-          ];
+            pkgs.cargo
+            pkgs.rustc
+            vendorScript
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.cargo-dyndrv ];
         };
 
         packages = {
           inherit vendorScript;
-
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           default = pkgs.stdenv.mkDerivation {
             name = "duckdb-protobuf-extension";
 
@@ -147,10 +153,8 @@
             ];
 
             buildPhase = ''
-              LIBRARY_PATH=$(find ${duckdb_protobuf.lib} -type f -name "*.dylib" -o -name "*.so" -o -name "*.dll" | head -n 1)
-
-              ${duckdb_metadata_bin}/bin/duckdb_metadata \
-                --input "$LIBRARY_PATH" \
+              ${crates.duckdb_metadata}/duckdb_metadata \
+                --input ${crates.duckdb_protobuf}/libduckdb_protobuf.so \
                 --output protobuf.duckdb_extension \
                 --extension-version ${extensionVersion} \
                 --duckdb-api-version ${apiVersion} \
