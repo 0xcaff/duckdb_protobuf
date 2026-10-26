@@ -151,12 +151,6 @@
           ];
         };
 
-        apps.generate-cargo-nix = {
-          type = "app";
-          program = "${generateCargoNix}/bin/generate-cargo-nix";
-          meta.description = "Regenerate the checked-in Cargo.nix from the working tree";
-        };
-
         packages = {
           inherit vendorScript;
 
