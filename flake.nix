@@ -11,7 +11,7 @@
   };
 
   outputs =
-    inputs@{
+    {
       flake-utils,
       nixpkgs,
       crate2nix,
@@ -82,15 +82,28 @@
           cp -r ${libduckdbSysCrate}/* packages/vendor/libduckdb-sys/
         '';
 
-        vendoredSrc = pkgs.stdenvNoCC.mkDerivation {
-          name = "duckdb-protobuf-src-with-vendor";
-          src = ./.;
-
-          buildPhase = "${vendorScript}/bin/vendor-deps";
-
-          installPhase = ''
-            mkdir -p $out
-            cp -r . $out/
+        generateCargoNix = pkgs.writeShellApplication {
+          name = "generate-cargo-nix";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.gnutar
+            pkgs.rust-bin.stable.latest.default
+            pkgs.crate2nix
+            vendorScript
+          ];
+          text = ''
+            # Generate from the working tree with fresh patched dependencies.
+            # Keep the developer's packages/vendor directory untouched.
+            generation_dir=$(mktemp -d)
+            trap 'chmod -R u+w "$generation_dir"; rm -r "$generation_dir"' EXIT
+            tar -c --exclude=packages/vendor Cargo.toml Cargo.lock packages \
+              | tar -x -C "$generation_dir"
+            (
+              cd "$generation_dir"
+              vendor-deps
+              crate2nix generate
+            )
+            cp "$generation_dir/Cargo.nix" Cargo.nix
           '';
         };
 
@@ -101,13 +114,15 @@
             cargo = pkgs.rust-bin.stable.latest.default;
           };
 
-        generatedCargoNix = inputs.crate2nix.tools.${system}.generatedCargoNix {
-          name = "duckdb_protobuf";
-          src = vendoredSrc;
-        };
-
-        cargoNix = import generatedCargoNix {
+        cargoNix = import ./Cargo.nix {
           inherit pkgs buildRustCrateForPkgs;
+          # Cargo metadata sees local vendor paths during generation. Builds use
+          # the patched store sources instead, so vendoring is not an eval step.
+          defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+            duckdb = _: { src = duckdbCrate; };
+            duckdb-loadable-macros = _: { src = duckdbLoadableMacrosCrate; };
+            libduckdb-sys = _: { src = libduckdbSysCrate; };
+          };
         };
 
         duckdb_protobuf = cargoNix.workspaceMembers.duckdb_protobuf.build;
@@ -132,6 +147,7 @@
         devShells.default = pkgs.mkShell {
           packages = [
             pkgs.crate2nix
+            generateCargoNix
           ];
         };
 
