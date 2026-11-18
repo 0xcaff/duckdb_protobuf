@@ -1,22 +1,29 @@
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::slice;
 
 use anyhow::{bail, format_err};
-use duckdb::vtab::{DataChunk, LogicalType, LogicalTypeId};
-use prost_reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
+use duckdb::vtab::{DataChunk, LogicalTypeId};
+use protobuf::reflect::{
+    FieldDescriptor, MessageDescriptor, MessageRef, ReflectFieldRef, ReflectOptionalRef,
+    ReflectValueRef, RuntimeFieldType, RuntimeType,
+};
+use protobuf::MessageDyn;
 
 pub fn write_to_output(
     mappings: &[u64],
     columns_state: &mut HashMap<ColumnKey, u64>,
-    value: &DynamicMessage,
+    value: &dyn MessageDyn,
     output: &DataChunk,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
     let column_key = &ColumnKey::empty();
-    let fields = value.descriptor().fields().collect::<Vec<_>>();
+    let message_descriptor = value.descriptor_dyn();
+    let fields: Vec<FieldDescriptor> = message_descriptor.fields().collect();
     for (output_field_idx, field_idx) in mappings.iter().enumerate() {
         let field_idx = *field_idx as usize;
         if field_idx >= fields.len() {
@@ -25,18 +32,20 @@ pub fn write_to_output(
 
         let field_descriptor = &fields[field_idx];
         let column_vector = output.get_vector(output_field_idx);
-        let value = value.get_field(&field_descriptor);
+        let field_ref = field_descriptor.get_reflect(value);
 
         let column_key = column_key.field(&field_descriptor);
 
         write_column(
             columns_state,
             &column_key,
-            &value,
+            Some(field_ref),
             &field_descriptor,
             column_vector,
             max_rows,
             row_idx,
+            include_position,
+            starting_offset,
         )?;
     }
 
@@ -46,27 +55,57 @@ pub fn write_to_output(
 pub fn write_message(
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
-    value: &DynamicMessage,
+    message_descriptor: &MessageDescriptor,
+    value: Option<MessageRef>,
     output: &impl VectorAccessor,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
-    for (field_idx, field_descriptor) in value.descriptor().fields().enumerate() {
+    let mut last_field_idx = 0;
+    for (field_idx, field_descriptor) in message_descriptor.fields().enumerate() {
+        last_field_idx = field_idx;
+
         let column_vector = output.get_vector(field_idx);
-        let value = value.get_field(&field_descriptor);
+        let field_ref = value
+            .as_ref()
+            .map(|it| field_descriptor.get_reflect(it.deref()));
 
         let column_key = column_key.field(&field_descriptor);
 
         write_column(
             columns_state,
             &column_key,
-            &value,
+            field_ref,
             &field_descriptor,
             column_vector,
             max_rows,
             row_idx,
+            include_position,
+            starting_offset,
         )?;
     }
+
+    // if include_position {
+    //     if let Some(value) = value {
+    //         let (start_pos, end_pos) = value.deref().special_fields_dyn().range();
+
+    //         let mut position_vector = {
+    //             let column = output.get_vector(last_field_idx + 1);
+    //             unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) }
+    //         };
+
+    //         let mut length_vector = {
+    //             let column = output.get_vector(last_field_idx + 2);
+    //             unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) }
+    //         };
+
+    //         position_vector.as_mut_slice()[row_idx] = start_pos + starting_offset;
+    //         length_vector.as_mut_slice()[row_idx] = end_pos - start_pos;
+    //     }
+    // }
+
 
     Ok(())
 }
@@ -98,24 +137,22 @@ impl<T> MyFlatVector<T> {
 pub fn write_column(
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
-    value: &Value,
+    field_ref: Option<ReflectFieldRef>,
     field_descriptor: &FieldDescriptor,
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
-    match field_descriptor.cardinality() {
-        Cardinality::Repeated => {
+    match field_descriptor.runtime_field_type() {
+        RuntimeFieldType::Repeated(element_type) => {
             let column_key = column_key.extending(ColumnKeyElement::List);
 
             let mut list_entries_vector = unsafe {
                 MyFlatVector::<duckdb::ffi::duckdb_list_entry>::with_capacity(column, max_rows)
             };
             let list_entry = &mut list_entries_vector.as_mut_slice()[row_idx];
-
-            let values = value
-                .as_list()
-                .ok_or_else(|| format_err!("expected list"))?;
 
             let next_offset_ref = columns_state.get_mut(&column_key);
             let next_offset = if let Some(it) = &next_offset_ref {
@@ -124,7 +161,11 @@ pub fn write_column(
                 0
             };
 
-            let len_u64 = u64::try_from(values.len())?;
+            let len_u64 = if let Some(ReflectFieldRef::Repeated(values)) = &field_ref {
+                u64::try_from(values.len())?
+            } else {
+                0
+            };
 
             list_entry.offset = next_offset;
             list_entry.length = len_u64;
@@ -142,33 +183,46 @@ pub fn write_column(
             unsafe { duckdb::ffi::duckdb_list_vector_reserve(column, new_length) };
             unsafe { duckdb::ffi::duckdb_list_vector_set_size(column, new_length) };
 
-            let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(column) };
+            if let Some(ReflectFieldRef::Repeated(values)) = field_ref {
+                let child_vector = unsafe { duckdb::ffi::duckdb_list_vector_get_child(column) };
 
-            for (idx, value) in values.iter().enumerate() {
-                let row_idx = next_offset as usize + idx;
+                let element_type = values.element_type();
 
-                write_single_column(
-                    columns_state,
-                    &column_key,
-                    value,
-                    field_descriptor,
-                    child_vector,
-                    new_length as usize,
-                    row_idx,
-                )?;
+                for (idx, value) in values.into_iter().enumerate() {
+                    let row_idx = next_offset as usize + idx;
+
+                    write_single_column(
+                        columns_state,
+                        &column_key,
+                        ReflectOptionalRef::some(value),
+                        &element_type,
+                        child_vector,
+                        new_length as usize,
+                        row_idx,
+                        include_position,
+                        starting_offset
+                    )?;
+                }
             }
         }
-        Cardinality::Optional | Cardinality::Required => {
+        RuntimeFieldType::Singular(runtime_type) => {
             write_single_column(
                 columns_state,
                 column_key,
-                value,
-                field_descriptor,
+                if let Some(ReflectFieldRef::Optional(values)) = field_ref {
+                    values
+                } else {
+                    ReflectOptionalRef::none(runtime_type.clone())
+                },
+                &runtime_type,
                 column,
                 max_rows,
                 row_idx,
+                include_position,
+                starting_offset
             )?;
         }
+        _ => return Err(format_err!("unknown type")),
     }
 
     Ok(())
@@ -177,73 +231,73 @@ pub fn write_column(
 pub fn write_single_column(
     columns_state: &mut HashMap<ColumnKey, u64>,
     column_key: &ColumnKey,
-    value: &Value,
-    field_descriptor: &FieldDescriptor,
+    value: ReflectOptionalRef,
+    runtime_type: &RuntimeType,
     column: duckdb::ffi::duckdb_vector,
     max_rows: usize,
     row_idx: usize,
+    include_position: bool,
+    starting_offset: u64,
 ) -> Result<(), anyhow::Error> {
-    match field_descriptor.kind() {
-        Kind::Message(message_descriptor)
+    match runtime_type {
+        RuntimeType::Message(message_descriptor)
             if message_descriptor.full_name() == "google.protobuf.Timestamp" =>
         {
-            let message = value
-                .as_message()
-                .ok_or_else(|| format_err!("expected message"))?;
-            let seconds =
-                message
-                    .get_field(&message_descriptor.get_field(1).ok_or_else(|| {
-                        format_err!("expected field 1 for google.protobuf.Timestamp")
-                    })?)
-                    .as_i64()
+            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] = if let Some(ReflectValueRef::Message(message_value)) =
+                value.value()
+            {
+                let seconds = message_descriptor
+                    .field_by_number(1)
+                    .ok_or_else(|| format_err!("expected field 1 for google.protobuf.Timestamp"))?
+                    .get_singular_field_or_default(message_value.deref())
+                    .to_i64()
                     .ok_or_else(|| format_err!("expected i64"))?;
 
-            let nanos =
-                message
-                    .get_field(&message_descriptor.get_field(2).ok_or_else(|| {
-                        format_err!("expected field 2 for google.protobuf.Timestamp")
-                    })?)
-                    .as_i32()
-                    .ok_or_else(|| format_err!("expected i32"))?;
+                let nanos = message_descriptor
+                    .field_by_number(2)
+                    .ok_or_else(|| format_err!("expected field 2 for google.protobuf.Timestamp"))?
+                    .get_singular_field_or_default(message_value.deref())
+                    .to_i32()
+                    .ok_or_else(|| format_err!("expected i64"))?;
 
-            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = seconds * 1000000 + (nanos as i64 / 1000);
+                seconds * 1000000 + (nanos as i64 / 1000)
+            } else {
+                0
+            }
         }
-        Kind::Message(..) => {
-            let message = value
-                .as_message()
-                .ok_or_else(|| format_err!("expected message"))?;
-
+        RuntimeType::Message(message_descriptor) => {
             let source = unsafe { StructVector::new(column) };
 
             write_message(
                 columns_state,
                 column_key,
-                message,
+                &message_descriptor,
+                if let Some(ReflectValueRef::Message(message)) = value.value() {
+                    Some(message)
+                } else {
+                    None
+                },
                 &source,
                 max_rows,
                 row_idx,
+                include_position,
+                starting_offset,
             )?;
         }
-        Kind::Enum(enum_descriptor) => {
-            let enum_value = value
-                .as_enum_number()
-                .ok_or_else(|| format_err!("expected enum value"))?;
+        RuntimeType::Enum(enum_descriptor) => {
+            let enum_value_descriptor =
+                if let Some(ReflectValueRef::Enum(.., value)) = value.value() {
+                    enum_descriptor.value_by_number_or_default(value)
+                } else {
+                    enum_descriptor.default_value()
+                };
+            let idx = enum_value_descriptor.value();
 
-            let enum_value_descriptor = enum_descriptor
-                .get_value(enum_value)
-                .unwrap_or_else(|| enum_descriptor.default_value());
+            let column_type = unsafe { duckdb::ffi::duckdb_vector_get_column_type(column) };
 
-            let (idx, _) = enum_descriptor
-                .values()
-                .enumerate()
-                .find(|(_, it)| it.number() == enum_value_descriptor.number())
-                .unwrap();
-
-            let column_type =
-                unsafe { duckdb::ffi::duckdb_vector_get_column_type(column) };
-
-            let logical_type = LogicalTypeId::from(unsafe { duckdb::ffi::duckdb_enum_internal_type(column_type) });
+            let logical_type =
+                LogicalTypeId::from(unsafe { duckdb::ffi::duckdb_enum_internal_type(column_type) });
 
             match logical_type {
                 LogicalTypeId::UTinyint => {
@@ -263,73 +317,103 @@ pub fn write_single_column(
                 _ => bail!("unknown enum column type {:?}", logical_type),
             }
         }
-        Kind::String => {
-            let value = value
-                .as_str()
-                .ok_or_else(|| format_err!("expected string"))?;
-            let value = CString::new(value)?;
+        RuntimeType::U32 => {
+            let mut vector = unsafe { MyFlatVector::<u32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] =
+                if let Some(ReflectValueRef::U32(value)) = value.value() {
+                    value
+                } else {
+                    u32::default()
+                };
+        }
+        RuntimeType::U64 => {
+            let mut vector = unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] =
+                if let Some(ReflectValueRef::U64(value)) = value.value() {
+                    value
+                } else {
+                    u64::default()
+                };
+        }
+        RuntimeType::I32 => {
+            let mut vector = unsafe { MyFlatVector::<i32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] =
+                if let Some(ReflectValueRef::I32(value)) = value.value() {
+                    value
+                } else {
+                    i32::default()
+                };
+        }
+        RuntimeType::I64 => {
+            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] =
+                if let Some(ReflectValueRef::I64(value)) = value.value() {
+                    value
+                } else {
+                    i64::default()
+                };
+        }
+        RuntimeType::F32 => {
+            let mut vector = unsafe { MyFlatVector::<f32>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] =
+                if let Some(ReflectValueRef::F32(value)) = value.value() {
+                    value
+                } else {
+                    f32::default()
+                };
+        }
+        RuntimeType::F64 => {
+            let mut vector = unsafe { MyFlatVector::<f64>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] =
+                if let Some(ReflectValueRef::F64(value)) = value.value() {
+                    value
+                } else {
+                    f64::default()
+                };
+        }
+        RuntimeType::Bool => {
+            let mut vector = unsafe { MyFlatVector::<bool>::with_capacity(column, max_rows) };
+            vector.as_mut_slice()[row_idx] =
+                if let Some(ReflectValueRef::Bool(value)) = value.value() {
+                    value
+                } else {
+                    bool::default()
+                };
+        }
+        RuntimeType::String => {
+            let value = if let Some(ReflectValueRef::String(value)) = value.value() {
+                value
+            } else {
+                ""
+            };
+            let value = value.as_bytes();
 
             unsafe {
-                duckdb::ffi::duckdb_vector_assign_string_element(
+                duckdb::ffi::duckdb_vector_assign_string_element_len(
                     column,
                     row_idx as u64,
-                    value.as_ptr(),
+                    value.as_ptr() as _,
+                    value.len() as _,
                 )
             };
         }
-        Kind::Double => {
-            let value = value
-                .as_f64()
-                .ok_or_else(|| format_err!("expected double"))?;
-            let mut vector = unsafe { MyFlatVector::<f64>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
+        RuntimeType::VecU8 => {
+            let value = if let Some(ReflectValueRef::Bytes(value)) = value.value() {
+                value
+            } else {
+                &[]
+            };
+
+            unsafe {
+                duckdb::ffi::duckdb_vector_assign_string_element_len(
+                    column,
+                    row_idx as u64,
+                    value.as_ptr() as _,
+                    value.len() as _,
+                )
+            };
         }
-        Kind::Float => {
-            let value = value
-                .as_f32()
-                .ok_or_else(|| format_err!("expected float"))?;
-            let mut vector = unsafe { MyFlatVector::<f32>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Int32 => {
-            let value = value
-                .as_i32()
-                .ok_or_else(|| format_err!("expected int32"))?;
-            let mut vector = unsafe { MyFlatVector::<i32>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Int64 => {
-            let value = value
-                .as_i64()
-                .ok_or_else(|| format_err!("expected int64"))?;
-            let mut vector = unsafe { MyFlatVector::<i64>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Uint32 => {
-            let value = value
-                .as_u32()
-                .ok_or_else(|| format_err!("expected uint32"))?;
-            let mut vector = unsafe { MyFlatVector::<u32>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Uint64 => {
-            let value = value
-                .as_u64()
-                .ok_or_else(|| format_err!("expected uint64"))?;
-            let mut vector = unsafe { MyFlatVector::<u64>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        Kind::Bool => {
-            let value = value
-                .as_bool()
-                .ok_or_else(|| format_err!("expected bool"))?;
-            let mut vector = unsafe { MyFlatVector::<bool>::with_capacity(column, max_rows) };
-            vector.as_mut_slice()[row_idx] = value;
-        }
-        _ => {
-            bail!("unhandled field type");
-        }
-    };
+    }
 
     Ok(())
 }
@@ -348,7 +432,7 @@ pub struct ColumnKey {
 impl ColumnKey {
     pub fn field(&self, field: &FieldDescriptor) -> ColumnKey {
         self.extending(ColumnKeyElement::Field {
-            field_tag: field.number(),
+            field_tag: field.proto().number() as u32,
         })
     }
 

@@ -1,0 +1,35 @@
+diff -ruN a/src/special.rs b/src/special.rs
+--- a/src/special.rs	2006-07-23 20:21:28
++++ b/src/special.rs	2024-11-30 18:16:16
+@@ -6,6 +6,7 @@
+ pub struct SpecialFields {
+     unknown_fields: UnknownFields,
+     cached_size: CachedSize,
++    range: Option<(u64, u64)>,
+ }
+ 
+ impl SpecialFields {
+@@ -14,6 +15,7 @@
+         SpecialFields {
+             unknown_fields: UnknownFields::new(),
+             cached_size: CachedSize::new(),
++            range: None,
+         }
+     }
+ 
+@@ -36,5 +38,15 @@
+     /// Setter.
+     pub fn mut_unknown_fields(&mut self) -> &mut UnknownFields {
+         &mut self.unknown_fields
++    }
++
++    /// Set range
++    pub fn set_range(&mut self, range: (u64, u64)) {
++        self.range = Some(range);
++    }
++
++    /// Get range
++    pub fn range(&self) -> (u64, u64) {
++        self.range.unwrap()
+     }
+ }
